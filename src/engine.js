@@ -322,6 +322,8 @@ function accumulate(acc, placed, w, ctx) {
       }
     }
     if (unknownCount === 1) acc.sunk[lastUnknown] += w;
+    const key = len * 100000 + p;
+    acc.placeW.set(key, (acc.placeW.get(key) || 0) + w);
   }
   acc.total += w;
   acc.totalSq += w * w;
@@ -478,7 +480,7 @@ function enumerate(ctx, budget, acc) {
 }
 
 function newAcc(n) {
-  return { occ: new Float64Array(n), sunk: new Float64Array(n), total: 0, totalSq: 0, drawn: 0 };
+  return { occ: new Float64Array(n), sunk: new Float64Array(n), total: 0, totalSq: 0, drawn: 0, placeW: new Map() };
 }
 
 function entropy3(a, b, c) {
@@ -538,6 +540,17 @@ export function analyze(g, options = {}) {
       ent[x] = entropy3(1 - pShip[x], pShip[x] - pSunk[x], pSunk[x]);
     }
   }
+  // Gefundene Schiffe: Position ist in ALLEN passenden Aufstellungen identisch
+  // (aber noch nicht versenkt). Zählen für Raster/Flotte als "nicht mehr gesucht".
+  const found = [];
+  if (!contradiction) {
+    for (const [key, w] of acc.placeW) {
+      if (w < acc.total * (1 - 1e-9)) continue;
+      const len = Math.floor(key / 100000), p = key % 100000;
+      const t = ctx.geo.byLength.get(len);
+      found.push({ length: len, cells: Array.from(t.cellIdx.subarray(p * len, (p + 1) * len)) });
+    }
+  }
   return {
     pShip,
     pSunk,
@@ -547,7 +560,8 @@ export function analyze(g, options = {}) {
     ess,
     samples: method === 'exact' ? configCount : samples,
     contradiction,
-    parity: parityInfo(g, pShip),
+    found,
+    parity: parityInfo(g, pShip, found),
   };
 }
 
@@ -561,6 +575,7 @@ function emptyResult(g, n) {
     ess: 1,
     samples: 1,
     contradiction: false,
+    found: [],
     parity: parityInfo(g, new Float64Array(n)),
   };
 }
@@ -574,8 +589,11 @@ function emptyResult(g, n) {
  * mit (Zeile + Spalte) % k == Klasse. Wir wählen die Klasse, auf der noch die
  * meiste Trefferwahrscheinlichkeit liegt.
  */
-export function parityInfo(g, pShip) {
-  const lens = Object.entries(g.remaining).filter(([, c]) => c > 0).map(([l]) => +l);
+export function parityInfo(g, pShip, found = []) {
+  // Noch zu suchende Schiffe = übrig (nicht versenkt) minus sicher gefundene
+  const searching = { ...g.remaining };
+  for (const f of found) searching[f.length]--;
+  const lens = Object.entries(searching).filter(([, c]) => c > 0).map(([l]) => +l);
   if (!lens.length) return { k: 0, cls: -1, cells: [] };
   const k = Math.min(...lens);
   const { rows, cols } = g.config;

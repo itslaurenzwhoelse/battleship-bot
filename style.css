@@ -177,11 +177,12 @@ kbd { font-size: 10px; opacity: .7; font-family: inherit; border: 1px solid curr
 
 .fleet { display: flex; flex-direction: column; gap: 6px; }
 .ship-row { display: flex; align-items: center; gap: 10px; font-size: 14px; }
-.ship-row .label { width: 64px; color: var(--muted); }
+.ship-row .label { min-width: 64px; color: var(--muted); }
 .ships { display: flex; flex-wrap: wrap; gap: 6px; }
 .ship { display: inline-flex; gap: 2px; }
 .ship i { width: 10px; height: 10px; border-radius: 2px; background: var(--accent); display: inline-block; }
 .ship.gone i { background: var(--blocked); }
+.ship.found i { background: var(--hit); }
 
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
 .field input, .field select {

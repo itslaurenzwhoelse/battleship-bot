@@ -188,6 +188,23 @@ console.log('Test 3: Spielablauf');
   check(E.parityInfo(g, a.pShip).k === 4, 'nur noch 4er -> Abstand 4');
 }
 
+// ---------------------------------------------------------------------------
+console.log('Test 4: Gefundene (sichere, nicht versenkte) Schiffe');
+{
+  const c = (s) => (+s.slice(1) - 1) * 9 + (s.charCodeAt(0) - 65);
+  let g = E.newGame();
+  for (const s of ['A1', 'B1', 'C1', 'A9', 'B9', 'C9']) E.applyShot(g, c(s), 'hit');
+  let a = E.analyze(g, { samples: 20000, seed: 3 });
+  check(a.found.length === 2 && a.found.every((f) => f.length === 4), 'zwei 4er gefunden');
+  g = E.newGame({ rows: 9, cols: 9, fleet: [{ length: 4, count: 1 }, { length: 3, count: 1 }] });
+  E.applyShot(g, c('A1'), 'hit');
+  E.applyShot(g, c('B1'), 'hit');
+  E.applyShot(g, c('D1'), 'miss');
+  a = E.analyze(g, { samples: 20000, seed: 3 });
+  check(a.found.length === 1 && a.found[0].length === 3, '3er gefunden');
+  check(a.parity.k === 4, 'nur noch 4er gesucht -> Raster 4');
+}
+
 if (failures) {
   console.error(`\n${failures} Fehler`);
   process.exit(1);

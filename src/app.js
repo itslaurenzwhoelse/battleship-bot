@@ -1,4 +1,4 @@
-import * as E from './engine.js';
+import * as E from './engine.js?v=3';
 
 // ---------------------------------------------------------------------------
 // Zustand
@@ -41,7 +41,7 @@ const pct = (v) => (v * 100).toFixed(v > 0 && v < 0.01 ? 1 : 0) + ' %';
 // ---------------------------------------------------------------------------
 let worker = null;
 try {
-  worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.js?v=3', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => onResult(e.data);
   worker.onerror = () => { worker = null; recompute(); };
 } catch { worker = null; }

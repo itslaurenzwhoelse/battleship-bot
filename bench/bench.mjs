@@ -7,14 +7,16 @@ import { Worker, isMainThread, parentPort, workerData } from 'node:worker_thread
 import os from 'node:os';
 import * as E from '../src/engine.js';
 
-const STRATS = ['infoPerMiss', 'entropy', 'probability'];
+const STRATS = (process.env.STRATS || 'infoPerMiss,entropy,probability').split(',');
+const NAMES = { ...Object.fromEntries(Object.entries(E.STRATEGIES).map(([k, v]) => [k, v.name])), evil: 'Evil-Modus (Info pro Fehlschuss)' };
 
 function playGame(ships, strategy, samples, seed) {
   const g = E.newGame();
   let move = 0;
   while (!E.isFinished(g)) {
     const a = E.analyze(g, { samples, seed: seed * 1000 + move++ });
-    const { cell } = E.chooseShot(g, a, strategy);
+    const evil = strategy === 'evil';
+    const { cell } = E.chooseShot(g, a, evil ? 'infoPerMiss' : strategy, { evil });
     if (cell < 0) throw new Error('kein Zug gefunden');
     const r = E.applyShot(g, cell, E.resolveShot(g, ships, cell));
     if (!r.ok) throw new Error(r.error);
@@ -63,7 +65,7 @@ if (isMainThread) {
     const m = stats(results[s].map((r) => r.misses));
     const sh = stats(results[s].map((r) => r.shots));
     console.log(
-      `${E.STRATEGIES[s].name.padEnd(32)}${m.mean.toFixed(2).padStart(6)} (±${m.se.toFixed(2)})   ${String(m.median).padStart(6)} ${String(m.min).padStart(4)} ${String(m.max).padStart(4)}   ${sh.mean.toFixed(2)}`,
+      `${NAMES[s].padEnd(36)}${m.mean.toFixed(2).padStart(6)} (±${m.se.toFixed(2)})   ${String(m.median).padStart(6)} ${String(m.min).padStart(4)} ${String(m.max).padStart(4)}   ${sh.mean.toFixed(2)}`,
     );
   }
   // gepaarter Vergleich

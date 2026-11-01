@@ -125,6 +125,11 @@ button, input, select { font: inherit; color: inherit; }
 .cell .rank {
   position: absolute; right: 3px; top: 1px; font-size: 9px; font-weight: 700; color: var(--best);
 }
+.cell.remembered { box-shadow: inset 0 0 0 3px var(--sunk); }
+.cell.remembered .num { visibility: hidden; }
+.cell.remembered::after { content: "💀"; position: absolute; font-size: 1.3em; }
+.evil-toggle { margin-top: 4px; font-weight: 600; }
+.rec-cell.finale { color: var(--sunk); }
 .cell.reveal-ship { box-shadow: inset 0 0 0 2px var(--sunk); }
 
 .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; justify-content: center; margin-top: 12px; font-size: 12px; color: var(--muted); }

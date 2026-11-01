@@ -13,6 +13,7 @@ const S = {
   config: store.get('config', E.DEFAULT_CONFIG),
   samples: store.get('samples', 30000),
   strategy: store.get('strategy', 'infoPerMiss'),
+  evil: store.get('evil', false),
   view: 'prob',
   showParity: true,
   showNumbers: true,
@@ -49,14 +50,14 @@ function recompute() {
   const id = ++S.reqId;
   S.busy = true;
   document.body.classList.add('busy');
-  const payload = { id, game: S.game, strategy: S.strategy, samples: S.samples };
+  const payload = { id, game: S.game, strategy: S.strategy, samples: S.samples, evil: S.evil };
   if (worker) {
     worker.postMessage(payload);
   } else {
     setTimeout(() => {
       const t0 = performance.now();
       const analysis = E.analyze(S.game, { samples: S.samples });
-      const choice = E.chooseShot(S.game, analysis, S.strategy);
+      const choice = E.chooseShot(S.game, analysis, S.strategy, { evil: S.evil });
       onResult({ id, analysis, choice, ms: performance.now() - t0 });
     }, 10);
   }
@@ -226,6 +227,7 @@ function render() {
   const n = g.cells.length;
   const parity = new Set(S.showParity && a ? a.parity.cells : []);
   const best = S.choice?.cell ?? -1;
+  const remembered = new Set(S.choice?.remembered || []);
   const ranks = new Map((S.choice?.ranking || []).slice(0, 5).map((r, i) => [r.cell, i + 1]));
   const truthCells = new Set(S.reveal && S.truth ? S.truth.flat() : []);
   // Farbskala relativ zum aktuell stärksten Feld (sonst sieht alles gleich aus)
@@ -254,6 +256,7 @@ function render() {
       if (parity.has(x)) cls.push('parity');
     }
     if (x === best && v === E.UNKNOWN) cls.push('best');
+    if (remembered.has(x) && x !== best && v === E.UNKNOWN) cls.push('remembered');
     if (x === S.selected) cls.push('selected');
     if (truthCells.has(x) && v !== E.SUNK) cls.push('reveal-ship');
     el.className = cls.join(' ');
@@ -273,13 +276,17 @@ function render() {
   const done = E.isFinished(g);
   if (done) {
     $('rec-cell').textContent = '🎉';
+    $('rec-cell').classList.remove('finale');
     $('rec-stats').textContent = `Fertig: ${g.shots} Schüsse, ${g.misses} Fehlschüsse.`;
   } else if (a && best >= 0) {
     const r = S.choice.ranking[0];
     $('rec-cell').textContent = cellName(best);
+    $('rec-cell').classList.toggle('finale', !!S.choice.finale);
     $('rec-stats').innerHTML =
       `Treffer ${pct(r.p)} · Versenkt ${pct(r.pSunk)} · Info ${r.entropy.toFixed(2)} bit` +
-      (S.choice.sure ? '<br>Sicherer Treffer – kostet keinen Zug.' : '');
+      (S.choice.sure ? '<br>Sicherer Treffer – kostet keinen Zug.' : '') +
+      (S.choice.finale ? `<br>😈 Finale: alle ${S.choice.remembered.length} gemerkten Felder jetzt nacheinander abschießen!` :
+        S.evil && S.choice.remembered.length ? `<br>😈 ${S.choice.remembered.length} sichere Treffer gemerkt.` : '');
   } else {
     $('rec-cell').textContent = '…';
     $('rec-stats').textContent = 'rechne …';
@@ -449,6 +456,15 @@ function init() {
 
   document.querySelectorAll('input[name=view]').forEach((r) =>
     r.addEventListener('change', () => { S.view = r.value; render(); }));
+  $('evil').checked = S.evil;
+  $('legend-evil').hidden = !S.evil;
+  $('evil').addEventListener('change', (e) => {
+    S.evil = e.target.checked;
+    store.set('evil', S.evil);
+    $('legend-evil').hidden = !S.evil;
+    S.manualSelect = false;
+    recompute();
+  });
   $('show-parity').addEventListener('change', (e) => { S.showParity = e.target.checked; render(); });
   $('show-numbers').addEventListener('change', (e) => { S.showNumbers = e.target.checked; render(); });
 

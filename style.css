@@ -128,6 +128,8 @@ button, input, select { font: inherit; color: inherit; }
 .cell.remembered { box-shadow: inset 0 0 0 3px var(--sunk); }
 .cell.remembered .num { visibility: hidden; }
 .cell.remembered::after { content: "💀"; position: absolute; font-size: 1.3em; }
+.btn.fire { width: 100%; margin-top: 8px; background: var(--sunk); color: #fff; border-color: transparent; }
+.btn.fire.unleashed { background: none; color: var(--text); border-color: var(--border); }
 .evil-toggle { margin-top: 4px; font-weight: 600; }
 .rec-cell.finale { color: var(--sunk); }
 .cell.reveal-ship { box-shadow: inset 0 0 0 2px var(--sunk); }

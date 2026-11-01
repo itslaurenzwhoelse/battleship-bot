@@ -1,0 +1,515 @@
+import * as E from './engine.js';
+
+// ---------------------------------------------------------------------------
+// Zustand
+// ---------------------------------------------------------------------------
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('bsh:' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('bsh:' + k, JSON.stringify(v)); } catch { /* egal */ } },
+};
+
+const S = {
+  mode: 'real',
+  config: store.get('config', E.DEFAULT_CONFIG),
+  samples: store.get('samples', 30000),
+  strategy: store.get('strategy', 'infoPerMiss'),
+  view: 'prob',
+  showParity: true,
+  showNumbers: true,
+  game: null,
+  history: [],
+  selected: -1,
+  manualSelect: false,
+  analysis: null,
+  choice: null,
+  ms: 0,
+  reqId: 0,
+  busy: false,
+  truth: null,     // Demo: echte Aufstellung
+  reveal: false,
+  auto: false,
+};
+
+const $ = (id) => document.getElementById(id);
+const colName = (c) => String.fromCharCode(65 + c);
+const cellName = (x) => colName(x % S.game.config.cols) + (Math.floor(x / S.game.config.cols) + 1);
+const pct = (v) => (v * 100).toFixed(v > 0 && v < 0.01 ? 1 : 0) + ' %';
+
+// ---------------------------------------------------------------------------
+// Rechnen (Web Worker, Fallback im Hauptthread)
+// ---------------------------------------------------------------------------
+let worker = null;
+try {
+  worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  worker.onmessage = (e) => onResult(e.data);
+  worker.onerror = () => { worker = null; recompute(); };
+} catch { worker = null; }
+
+function recompute() {
+  const id = ++S.reqId;
+  S.busy = true;
+  document.body.classList.add('busy');
+  const payload = { id, game: S.game, strategy: S.strategy, samples: S.samples };
+  if (worker) {
+    worker.postMessage(payload);
+  } else {
+    setTimeout(() => {
+      const t0 = performance.now();
+      const analysis = E.analyze(S.game, { samples: S.samples });
+      const choice = E.chooseShot(S.game, analysis, S.strategy);
+      onResult({ id, analysis, choice, ms: performance.now() - t0 });
+    }, 10);
+  }
+}
+
+function onResult({ id, analysis, choice, ms }) {
+  if (id !== S.reqId) return; // veraltet
+  S.analysis = analysis;
+  S.choice = choice;
+  S.ms = ms;
+  S.busy = false;
+  document.body.classList.remove('busy');
+  if (!S.manualSelect || S.selected < 0 || S.game.cells[S.selected] !== E.UNKNOWN) {
+    S.selected = choice.cell;
+    S.manualSelect = false;
+  }
+  if (analysis.contradiction && !E.isFinished(S.game)) {
+    msg('Widerspruch: Keine Aufstellung passt zu den Eingaben. Bitte prüfen (Rückgängig).', 'err');
+  }
+  render();
+  if (S.auto) setTimeout(autoStep, 250);
+}
+
+// ---------------------------------------------------------------------------
+// Spielaktionen
+// ---------------------------------------------------------------------------
+function newGame() {
+  S.game = E.newGame(S.config);
+  S.history = [];
+  S.analysis = null;
+  S.choice = null;
+  S.selected = -1;
+  S.manualSelect = false;
+  S.reveal = false;
+  stopAuto();
+  if (S.mode === 'demo') {
+    try { S.truth = E.randomFleet(S.config); } catch (e) { msg(e.message, 'err'); S.truth = null; }
+  } else {
+    S.truth = null;
+  }
+  buildBoard();
+  saveGame();
+  msg('');
+  recompute();
+  render();
+}
+
+function shoot(x, result) {
+  if (x < 0) return msg('Erst ein Feld auswählen.', 'err');
+  if (E.isFinished(S.game)) return msg('Spiel ist vorbei – „Neues Spiel“ starten.', 'err');
+  const before = E.cloneGame(S.game);
+  const r = E.applyShot(S.game, x, result);
+  if (!r.ok) return msg(r.error, 'err');
+  S.history.push(before);
+  S.manualSelect = false;
+  if (result === 'sunk') {
+    msg(`${cellName(x)}: ${r.sunkLength}er versenkt – Rand gesperrt.`, 'ok');
+  } else {
+    msg(`${cellName(x)}: ${result === 'hit' ? 'Treffer' : 'Wasser'}.`, result === 'hit' ? 'ok' : '');
+  }
+  if (E.isFinished(S.game)) {
+    msg(`Alle Schiffe versenkt! ${S.game.shots} Schüsse, davon ${S.game.misses} Fehlschüsse.`, 'ok');
+    stopAuto();
+  }
+  saveGame();
+  recompute();
+  render();
+}
+
+function undo() {
+  if (!S.history.length) return;
+  S.game = S.history.pop();
+  S.manualSelect = false;
+  msg('Rückgängig gemacht.');
+  saveGame();
+  recompute();
+  render();
+}
+
+function demoShoot(x) {
+  if (!S.truth) return;
+  const cur = S.game.cells[x];
+  if (cur !== E.UNKNOWN && cur !== E.BLOCKED) return msg('Feld wurde schon beschossen.', 'err');
+  shoot(x, E.resolveShot(S.game, S.truth, x));
+}
+
+function botMove() {
+  if (S.busy || !S.choice || S.choice.cell < 0) return;
+  demoShoot(S.choice.cell);
+}
+
+function autoStep() {
+  if (!S.auto) return;
+  if (E.isFinished(S.game)) return stopAuto();
+  if (!S.busy) botMove();
+}
+function stopAuto() {
+  S.auto = false;
+  const b = $('demo-auto');
+  if (b) b.textContent = 'Auto ▶';
+}
+
+function saveGame() {
+  if (S.mode !== 'real') return;
+  const g = S.game;
+  store.set('game', { config: g.config, cells: Array.from(g.cells), remaining: g.remaining, sunkShips: g.sunkShips, shots: g.shots, misses: g.misses });
+}
+
+function loadGame() {
+  const saved = store.get('game', null);
+  if (!saved || JSON.stringify(saved.config) !== JSON.stringify(E.normalizeConfig(S.config))) return false;
+  const g = E.newGame(saved.config);
+  g.cells.set(saved.cells);
+  Object.assign(g, { remaining: saved.remaining, sunkShips: saved.sunkShips, shots: saved.shots, misses: saved.misses });
+  S.game = g;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Darstellung
+// ---------------------------------------------------------------------------
+let cellEls = [];
+
+function buildBoard() {
+  const { rows, cols } = S.game.config;
+  const board = $('board');
+  board.style.setProperty('--n-cols', cols);
+  board.innerHTML = '';
+  board.appendChild(document.createElement('div'));
+  for (let c = 0; c < cols; c++) {
+    const l = document.createElement('div');
+    l.className = 'lab';
+    l.textContent = colName(c);
+    board.appendChild(l);
+  }
+  cellEls = [];
+  for (let r = 0; r < rows; r++) {
+    const l = document.createElement('div');
+    l.className = 'lab';
+    l.textContent = r + 1;
+    board.appendChild(l);
+    for (let c = 0; c < cols; c++) {
+      const x = r * cols + c;
+      const b = document.createElement('button');
+      b.className = 'cell';
+      b.dataset.x = x;
+      b.innerHTML = '<span class="num"></span>';
+      b.addEventListener('click', () => onCellClick(x));
+      b.addEventListener('dblclick', () => { if (S.mode === 'demo') demoShoot(x); });
+      board.appendChild(b);
+      cellEls.push(b);
+    }
+  }
+}
+
+function onCellClick(x) {
+  S.selected = x;
+  S.manualSelect = true;
+  render();
+}
+
+const HEAT = { prob: '#f59e0b', entropy: '#8b5cf6' };
+
+function render() {
+  const g = S.game;
+  const a = S.analysis;
+  const n = g.cells.length;
+  const parity = new Set(S.showParity && a ? a.parity.cells : []);
+  const best = S.choice?.cell ?? -1;
+  const ranks = new Map((S.choice?.ranking || []).slice(0, 5).map((r, i) => [r.cell, i + 1]));
+  const truthCells = new Set(S.reveal && S.truth ? S.truth.flat() : []);
+  // Farbskala relativ zum aktuell stärksten Feld (sonst sieht alles gleich aus)
+  let maxEnt = 0, maxP = 0;
+  if (a) for (let x = 0; x < n; x++) { maxEnt = Math.max(maxEnt, a.entropy[x]); maxP = Math.max(maxP, a.pShip[x]); }
+
+  for (let x = 0; x < n; x++) {
+    const el = cellEls[x];
+    const v = g.cells[x];
+    const cls = ['cell'];
+    let bg = '';
+    let text = '';
+    if (v === E.MISS) cls.push('miss');
+    else if (v === E.HIT) cls.push('hit');
+    else if (v === E.SUNK) cls.push('sunk');
+    else if (v === E.BLOCKED) cls.push('blocked');
+    else if (a && !a.contradiction) {
+      const val = S.view === 'prob' ? (maxP > 0 ? a.pShip[x] / maxP : 0) : (maxEnt > 0 ? a.entropy[x] / maxEnt : 0);
+      const p = Math.round(val * val * 90); // quadratisch: Unterschiede oben deutlicher
+      bg = `color-mix(in oklab, ${HEAT[S.view]} ${p}%, var(--cell-unknown))`;
+      if (p > 55) cls.push('dark-text');
+      if (a.pShip[x] <= 1e-9) cls.push('zero');
+      if (S.showNumbers) {
+        text = S.view === 'prob' ? String(Math.round(a.pShip[x] * 100)) : a.entropy[x].toFixed(2).replace(/^0/, '');
+      }
+      if (parity.has(x)) cls.push('parity');
+    }
+    if (x === best && v === E.UNKNOWN) cls.push('best');
+    if (x === S.selected) cls.push('selected');
+    if (truthCells.has(x) && v !== E.SUNK) cls.push('reveal-ship');
+    el.className = cls.join(' ');
+    el.style.background = bg;
+    el.style.color = bg && cls.includes('dark-text') ? '#141821' : '';
+    el.firstChild.textContent = text;
+    const rk = ranks.get(x);
+    let rankEl = el.querySelector('.rank');
+    if (rk && rk > 1 && v === E.UNKNOWN && S.showNumbers) {
+      if (!rankEl) { rankEl = document.createElement('span'); rankEl.className = 'rank'; el.appendChild(rankEl); }
+      rankEl.textContent = rk;
+    } else if (rankEl) rankEl.remove();
+    el.setAttribute('aria-label', `${cellName(x)}${text ? ' ' + text + ' Prozent' : ''}`);
+  }
+
+  // Empfehlung
+  const done = E.isFinished(g);
+  if (done) {
+    $('rec-cell').textContent = '🎉';
+    $('rec-stats').textContent = `Fertig: ${g.shots} Schüsse, ${g.misses} Fehlschüsse.`;
+  } else if (a && best >= 0) {
+    const r = S.choice.ranking[0];
+    $('rec-cell').textContent = cellName(best);
+    $('rec-stats').innerHTML =
+      `Treffer ${pct(r.p)} · Versenkt ${pct(r.pSunk)} · Info ${r.entropy.toFixed(2)} bit` +
+      (S.choice.sure ? '<br>Sicherer Treffer – kostet keinen Zug.' : '');
+  } else {
+    $('rec-cell').textContent = '…';
+    $('rec-stats').textContent = 'rechne …';
+  }
+
+  // Auswahl
+  const sel = S.selected;
+  $('sel-cell').textContent = sel >= 0 ? cellName(sel) : '–';
+  let hint = '';
+  if (sel >= 0 && a && g.cells[sel] === E.UNKNOWN) hint = `(Treffer ${pct(a.pShip[sel])})`;
+  else if (sel >= 0 && g.cells[sel] === E.HIT) hint = '(Treffer – mit „Versenkt“ als versenkt markieren)';
+  $('sel-hint').textContent = hint;
+  $('undo').disabled = !S.history.length;
+
+  renderFleet();
+  renderStats();
+}
+
+function renderFleet() {
+  const g = S.game;
+  const el = $('fleet');
+  el.innerHTML = '';
+  for (const f of g.config.fleet) {
+    const left = g.remaining[f.length] || 0;
+    const row = document.createElement('div');
+    row.className = 'ship-row';
+    const ships = Array.from({ length: f.count }, (_, i) =>
+      `<span class="ship ${i < left ? '' : 'gone'}">${'<i></i>'.repeat(f.length)}</span>`).join('');
+    row.innerHTML = `<span class="label">${f.length}er: ${left}/${f.count}</span><span class="ships">${ships}</span>`;
+    el.appendChild(row);
+  }
+  const p = S.analysis?.parity;
+  if (p && p.k) {
+    const note = document.createElement('div');
+    note.className = 'hint';
+    note.textContent = `Raster: jedes ${p.k}. Feld (kürzestes Schiff = ${p.k}, also ${p.k - 1} Lücken dazwischen).`;
+    el.appendChild(note);
+  }
+}
+
+function renderStats() {
+  const a = S.analysis;
+  const g = S.game;
+  const fmtCount = (c) => {
+    if (c < 1e6) return Math.round(c).toLocaleString('de-DE');
+    const e = Math.floor(Math.log10(c));
+    return `≈ ${(c / 10 ** e).toFixed(1).replace('.', ',')}·10^${e}`;
+  };
+  const rows = [
+    ['Schüsse', g.shots],
+    ['Fehlschüsse', g.misses],
+    ['Mögliche Aufstellungen', a ? fmtCount(a.configCount) : '…'],
+    ['Methode', a ? (a.method === 'exact' ? 'exakt gezählt' : `Stichprobe (${S.samples.toLocaleString('de-DE')})`) : '…'],
+    ['Effektive Stichprobe', a && a.method !== 'exact' ? Math.round(a.ess).toLocaleString('de-DE') : '–'],
+    ['Rechenzeit', a ? `${Math.round(S.ms)} ms` : '…'],
+  ];
+  $('stats').innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+
+  const top = (S.choice?.ranking || []).slice(0, 6);
+  if (!top.length) { $('top-list').innerHTML = ''; return; }
+  $('top-list').innerHTML =
+    '<table><thead><tr><th>Feld</th><th>Treffer</th><th>Versenkt</th><th>Info</th><th>Score</th></tr></thead><tbody>' +
+    top.map((r) => `<tr data-x="${r.cell}"><td>${cellName(r.cell)}${r.parity ? ' •' : ''}</td><td>${pct(r.p)}</td><td>${pct(r.pSunk)}</td><td>${r.entropy.toFixed(2)}</td><td>${r.score.toFixed(2)}</td></tr>`).join('') +
+    '</tbody></table>';
+  $('top-list').querySelectorAll('tr[data-x]').forEach((tr) =>
+    tr.addEventListener('click', () => onCellClick(+tr.dataset.x)));
+}
+
+function msg(text, kind = '') {
+  const el = $('msg');
+  el.textContent = text;
+  el.className = 'msg ' + kind;
+}
+
+// ---------------------------------------------------------------------------
+// Einstellungen
+// ---------------------------------------------------------------------------
+let draftFleet = [];
+
+function fillSettings() {
+  $('cfg-rows').value = S.config.rows;
+  $('cfg-cols').value = S.config.cols;
+  $('cfg-diag').checked = !!S.config.diagonalTouch;
+  $('cfg-samples').value = S.samples;
+  draftFleet = S.config.fleet.map((f) => ({ ...f }));
+  renderDraftFleet();
+}
+
+function renderDraftFleet() {
+  const el = $('cfg-fleet');
+  el.innerHTML = '';
+  draftFleet.forEach((f, i) => {
+    const line = document.createElement('div');
+    line.className = 'fleet-line';
+    line.innerHTML = `<input type="number" min="1" max="12" value="${f.count}" aria-label="Anzahl"> × Länge
+      <input type="number" min="1" max="12" value="${f.length}" aria-label="Länge">
+      <button class="btn ghost small" aria-label="Entfernen">✕</button>`;
+    const [cnt, len] = line.querySelectorAll('input');
+    cnt.addEventListener('input', () => { f.count = +cnt.value; });
+    len.addEventListener('input', () => { f.length = +len.value; });
+    line.querySelector('button').addEventListener('click', () => { draftFleet.splice(i, 1); renderDraftFleet(); });
+    el.appendChild(line);
+  });
+}
+
+function applySettings() {
+  const rows = Math.max(4, Math.min(12, +$('cfg-rows').value || 9));
+  const cols = Math.max(4, Math.min(12, +$('cfg-cols').value || 9));
+  // gleiche Längen zusammenfassen
+  const merged = {};
+  for (const f of draftFleet) if (f.count > 0 && f.length > 0) merged[f.length] = (merged[f.length] || 0) + f.count;
+  const fleet = Object.entries(merged).map(([length, count]) => ({ length: +length, count }));
+  if (!fleet.length) return msg('Mindestens ein Schiff angeben.', 'err');
+  if (fleet.some((f) => f.length > Math.max(rows, cols))) return msg('Ein Schiff ist länger als das Feld.', 'err');
+  const cfg = E.normalizeConfig({ rows, cols, fleet, diagonalTouch: $('cfg-diag').checked });
+  const test = E.analyze(E.newGame(cfg), { samples: 3000 });
+  if (test.contradiction) return msg('Diese Flotte passt nicht aufs Feld.', 'err');
+  S.config = cfg;
+  S.samples = Math.max(1000, Math.min(200000, +$('cfg-samples').value || 30000));
+  store.set('config', cfg);
+  store.set('samples', S.samples);
+  fillSettings();
+  newGame();
+  msg('Einstellungen übernommen.', 'ok');
+}
+
+// ---------------------------------------------------------------------------
+// Ereignisse
+// ---------------------------------------------------------------------------
+function setMode(mode) {
+  S.mode = mode;
+  $('mode-real').classList.toggle('active', mode === 'real');
+  $('mode-demo').classList.toggle('active', mode === 'demo');
+  $('real-actions').hidden = mode !== 'real';
+  $('demo-actions').hidden = mode !== 'demo';
+  if (mode === 'real' && loadGame()) {
+    S.history = [];
+    S.truth = null;
+    stopAuto();
+    buildBoard();
+    recompute();
+    render();
+    msg('Gespeichertes Spiel geladen.');
+  } else {
+    newGame();
+  }
+}
+
+function init() {
+  const sel = $('strategy');
+  for (const [k, v] of Object.entries(E.STRATEGIES)) {
+    const o = document.createElement('option');
+    o.value = k;
+    o.textContent = v.name + (k === 'infoPerMiss' ? ' (Standard)' : '');
+    sel.appendChild(o);
+  }
+  if (!E.STRATEGIES[S.strategy]) S.strategy = 'infoPerMiss';
+  sel.value = S.strategy;
+  $('strategy-desc').textContent = E.STRATEGIES[S.strategy].desc;
+  sel.addEventListener('change', () => {
+    S.strategy = sel.value;
+    store.set('strategy', S.strategy);
+    $('strategy-desc').textContent = E.STRATEGIES[S.strategy].desc;
+    S.manualSelect = false;
+    recompute();
+  });
+
+  document.querySelectorAll('input[name=view]').forEach((r) =>
+    r.addEventListener('change', () => { S.view = r.value; render(); }));
+  $('show-parity').addEventListener('change', (e) => { S.showParity = e.target.checked; render(); });
+  $('show-numbers').addEventListener('change', (e) => { S.showNumbers = e.target.checked; render(); });
+
+  document.querySelectorAll('#real-actions [data-res]').forEach((b) =>
+    b.addEventListener('click', () => shoot(S.selected, b.dataset.res)));
+  $('undo').addEventListener('click', undo);
+  $('new-game').addEventListener('click', () => {
+    if (S.mode === 'real' && S.game.shots > 0 && !E.isFinished(S.game) && !confirm('Laufendes Spiel verwerfen?')) return;
+    newGame();
+  });
+  $('mode-real').addEventListener('click', () => S.mode !== 'real' && setMode('real'));
+  $('mode-demo').addEventListener('click', () => S.mode !== 'demo' && setMode('demo'));
+  $('demo-shoot').addEventListener('click', () => demoShoot(S.selected));
+  $('demo-bot').addEventListener('click', botMove);
+  $('demo-auto').addEventListener('click', () => {
+    if (S.auto) return stopAuto();
+    if (E.isFinished(S.game)) newGame();
+    S.auto = true;
+    $('demo-auto').textContent = 'Stopp ⏸';
+    autoStep();
+  });
+  $('demo-reveal').addEventListener('click', () => { S.reveal = !S.reveal; render(); });
+
+  $('cfg-add').addEventListener('click', () => { draftFleet.push({ length: 2, count: 1 }); renderDraftFleet(); });
+  $('cfg-apply').addEventListener('click', applySettings);
+  $('cfg-reset').addEventListener('click', () => {
+    S.config = E.normalizeConfig(E.DEFAULT_CONFIG);
+    S.samples = 30000;
+    fillSettings();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.target.closest('input, select, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    const { rows, cols } = S.game.config;
+    const moves = { arrowup: -cols, arrowdown: cols, arrowleft: -1, arrowright: 1 };
+    if (moves[k] !== undefined) {
+      e.preventDefault();
+      let x = S.selected < 0 ? 0 : S.selected;
+      const r = Math.floor(x / cols), c = x % cols;
+      if (k === 'arrowup' && r > 0) x -= cols;
+      if (k === 'arrowdown' && r < rows - 1) x += cols;
+      if (k === 'arrowleft' && c > 0) x -= 1;
+      if (k === 'arrowright' && c < cols - 1) x += 1;
+      onCellClick(x);
+      return;
+    }
+    if (k === 'z') return undo();
+    if (S.mode === 'real') {
+      if (k === 'w') shoot(S.selected, 'miss');
+      else if (k === 't') shoot(S.selected, 'hit');
+      else if (k === 'v') shoot(S.selected, 'sunk');
+    } else {
+      if (k === ' ' || k === 'enter') { e.preventDefault(); demoShoot(S.selected); }
+      else if (k === 'b') botMove();
+    }
+  });
+
+  S.config = E.normalizeConfig(S.config);
+  fillSettings();
+  setMode('real');
+}
+
+init();

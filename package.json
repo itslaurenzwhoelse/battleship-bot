@@ -1,0 +1,12 @@
+{
+  "name": "battleship-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Battleship-Helfer: Wahrscheinlichkeiten, Entropie und Schussempfehlung im Browser",
+  "scripts": {
+    "test": "node test/validate.mjs",
+    "bench": "node bench/bench.mjs",
+    "start": "python3 -m http.server 8000"
+  }
+}

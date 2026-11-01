@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Battleship Helfer</title>
+  <meta name="description" content="Schiffe versenken: Wahrscheinlichkeiten, Entropie und Schussempfehlung nach jedem Zug.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Battleship Helfer</h1>
+    <div class="mode" role="tablist" aria-label="Modus">
+      <button id="mode-real" class="tab active" role="tab">Echtes Spiel</button>
+      <button id="mode-demo" class="tab" role="tab">Übung / Demo</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="board-wrap">
+      <div class="board-head">
+        <div class="legend-toggle">
+          <label><input type="radio" name="view" value="prob" checked> Trefferwahrscheinlichkeit</label>
+          <label><input type="radio" name="view" value="entropy"> Entropie</label>
+        </div>
+        <label class="chk"><input type="checkbox" id="show-parity" checked> Raster</label>
+        <label class="chk"><input type="checkbox" id="show-numbers" checked> Zahlen</label>
+      </div>
+      <div id="board" class="board" aria-label="Spielfeld"></div>
+      <div class="legend">
+        <span><i class="sw sw-best"></i>Empfehlung</span>
+        <span><i class="sw sw-parity"></i>Rasterfeld</span>
+        <span><i class="sw sw-miss"></i>Wasser</span>
+        <span><i class="sw sw-hit"></i>Treffer</span>
+        <span><i class="sw sw-sunk"></i>Versenkt</span>
+        <span><i class="sw sw-blocked"></i>Gesperrt</span>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <div class="card" id="rec-card">
+        <div class="rec-title">Empfehlung</div>
+        <div class="rec-cell" id="rec-cell">–</div>
+        <div class="rec-stats" id="rec-stats"></div>
+      </div>
+
+      <div class="card">
+        <div class="sel-line">Ausgewählt: <b id="sel-cell">–</b> <span class="hint" id="sel-hint"></span></div>
+        <div class="actions" id="real-actions">
+          <button class="btn miss" data-res="miss">Wasser <kbd>W</kbd></button>
+          <button class="btn hit" data-res="hit">Treffer <kbd>T</kbd></button>
+          <button class="btn sunk" data-res="sunk">Versenkt <kbd>V</kbd></button>
+        </div>
+        <div class="actions" id="demo-actions" hidden>
+          <button class="btn" id="demo-shoot">Ausgewähltes schießen <kbd>␣</kbd></button>
+          <button class="btn" id="demo-bot">Bot-Zug <kbd>B</kbd></button>
+          <button class="btn" id="demo-auto">Auto ▶</button>
+          <button class="btn ghost" id="demo-reveal">Aufdecken</button>
+        </div>
+        <div class="msg" id="msg" role="status"></div>
+        <div class="row-btns">
+          <button class="btn ghost" id="undo">↶ Rückgängig <kbd>Z</kbd></button>
+          <button class="btn ghost" id="new-game">Neues Spiel</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Flotte</div>
+        <div id="fleet" class="fleet"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Rechnung</div>
+        <label class="field">Strategie
+          <select id="strategy"></select>
+        </label>
+        <p class="hint" id="strategy-desc"></p>
+        <dl class="stats" id="stats"></dl>
+        <div class="top-list" id="top-list"></div>
+      </div>
+
+      <details class="card">
+        <summary class="card-title">Einstellungen</summary>
+        <div class="settings">
+          <label class="field">Zeilen <input type="number" id="cfg-rows" min="4" max="12"></label>
+          <label class="field">Spalten <input type="number" id="cfg-cols" min="4" max="12"></label>
+          <div class="field">Schiffe
+            <div id="cfg-fleet"></div>
+            <button class="btn ghost small" id="cfg-add">+ Schiffstyp</button>
+          </div>
+          <label class="chk"><input type="checkbox" id="cfg-diag"> Schiffe dürfen sich diagonal berühren</label>
+          <label class="field">Stichproben pro Rechnung <input type="number" id="cfg-samples" min="1000" max="200000" step="1000"></label>
+          <div class="row-btns">
+            <button class="btn" id="cfg-apply">Übernehmen &amp; neues Spiel</button>
+            <button class="btn ghost" id="cfg-reset">Standard</button>
+          </div>
+        </div>
+      </details>
+    </aside>
+  </main>
+
+  <footer class="foot">
+    Rechnet über ganze Flottenaufstellungen (Stichprobe bzw. exakt). Details im <a href="https://github.com/itslaurenzwhoelse/battleship-bot">README</a>.
+  </footer>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

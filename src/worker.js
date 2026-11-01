@@ -1,5 +1,5 @@
 // Web Worker: rechnet die Analyse im Hintergrund, damit die Seite flüssig bleibt.
-import { analyze, chooseShot } from './engine.js?v=3';
+import { analyze, chooseShot } from './engine.js?v=4';
 
 self.onmessage = (e) => {
   const { id, game, strategy, samples, evil } = e.data;

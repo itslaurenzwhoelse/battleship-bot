@@ -1,4 +1,4 @@
-import * as E from './engine.js?v=3';
+import * as E from './engine.js?v=4';
 
 // ---------------------------------------------------------------------------
 // Zustand
@@ -14,6 +14,7 @@ const S = {
   samples: store.get('samples', 30000),
   strategy: store.get('strategy', 'infoPerMiss'),
   evil: store.get('evil', false),
+  unleash: store.get('unleash', false), // Evil-Modus fürs laufende Spiel beendet ("Alles abfeuern")
   view: 'prob',
   showParity: true,
   showNumbers: true,
@@ -41,7 +42,7 @@ const pct = (v) => (v * 100).toFixed(v > 0 && v < 0.01 ? 1 : 0) + ' %';
 // ---------------------------------------------------------------------------
 let worker = null;
 try {
-  worker = new Worker(new URL('./worker.js?v=3', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.js?v=4', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => onResult(e.data);
   worker.onerror = () => { worker = null; recompute(); };
 } catch { worker = null; }
@@ -50,14 +51,14 @@ function recompute() {
   const id = ++S.reqId;
   S.busy = true;
   document.body.classList.add('busy');
-  const payload = { id, game: S.game, strategy: S.strategy, samples: S.samples, evil: S.evil };
+  const payload = { id, game: S.game, strategy: S.strategy, samples: S.samples, evil: evilActive() };
   if (worker) {
     worker.postMessage(payload);
   } else {
     setTimeout(() => {
       const t0 = performance.now();
       const analysis = E.analyze(S.game, { samples: S.samples });
-      const choice = E.chooseShot(S.game, analysis, S.strategy, { evil: S.evil });
+      const choice = E.chooseShot(S.game, analysis, S.strategy, { evil: evilActive() });
       onResult({ id, analysis, choice, ms: performance.now() - t0 });
     }, 10);
   }
@@ -84,8 +85,22 @@ function onResult({ id, analysis, choice, ms }) {
 // ---------------------------------------------------------------------------
 // Spielaktionen
 // ---------------------------------------------------------------------------
+const evilActive = () => S.evil && !S.unleash;
+
+function setUnleash(v) {
+  S.unleash = v;
+  if (S.mode === 'real') store.set('unleash', v);
+  S.manualSelect = false;
+  if (v) msg('🔥 Feuer frei: erst alle gemerkten Treffer, dann normal weiter.', 'ok');
+  else msg('😈 Zurück im Evil-Modus.');
+  recompute();
+  render();
+}
+
 function newGame() {
   S.game = E.newGame(S.config);
+  S.unleash = false;
+  if (S.mode === 'real') store.set('unleash', false);
   S.history = [];
   S.analysis = null;
   S.choice = null;
@@ -272,8 +287,17 @@ function render() {
     el.setAttribute('aria-label', `${cellName(x)}${text ? ' ' + text + ' Prozent' : ''}`);
   }
 
-  // Empfehlung
+  // Abfeuern-Knopf (nur im Evil-Modus)
   const done = E.isFinished(g);
+  const fire = $('fire');
+  fire.hidden = !S.evil || done;
+  fire.classList.toggle('unleashed', S.unleash);
+  const nRem = S.choice?.remembered?.length || 0;
+  fire.innerHTML = S.unleash
+    ? '😈 Zurück zum Evil-Modus <kbd>F</kbd>'
+    : `🔥 Alles abfeuern${nRem ? ` (${nRem} 💀)` : ''} <kbd>F</kbd>`;
+
+  // Empfehlung
   if (done) {
     $('rec-cell').textContent = '🎉';
     $('rec-cell').classList.remove('finale');
@@ -286,7 +310,8 @@ function render() {
       `Treffer ${pct(r.p)} · Versenkt ${pct(r.pSunk)} · Info ${r.entropy.toFixed(2)} bit` +
       (S.choice.sure ? '<br>Sicherer Treffer – kostet keinen Zug.' : '') +
       (S.choice.finale ? `<br>😈 Finale: alle ${S.choice.remembered.length} gemerkten Felder jetzt nacheinander abschießen!` :
-        S.evil && S.choice.remembered.length ? `<br>😈 ${S.choice.remembered.length} sichere Treffer gemerkt.` : '');
+        evilActive() && S.choice.remembered.length ? `<br>😈 ${S.choice.remembered.length} sichere Treffer gemerkt.` : '') +
+      (S.evil && S.unleash ? '<br>🔥 Feuer frei – Evil-Modus für dieses Spiel beendet.' : '');
   } else {
     $('rec-cell').textContent = '…';
     $('rec-stats').textContent = 'rechne …';
@@ -422,6 +447,7 @@ function setMode(mode) {
   $('mode-demo').classList.toggle('active', mode === 'demo');
   $('real-actions').hidden = mode !== 'real';
   $('demo-actions').hidden = mode !== 'demo';
+  S.unleash = mode === 'real' ? store.get('unleash', false) : false;
   if (mode === 'real' && loadGame()) {
     S.history = [];
     S.truth = null;
@@ -458,6 +484,7 @@ function init() {
     r.addEventListener('change', () => { S.view = r.value; render(); }));
   $('evil').checked = S.evil;
   $('legend-evil').hidden = !S.evil;
+  $('fire').addEventListener('click', () => setUnleash(!S.unleash));
   $('evil').addEventListener('change', (e) => {
     S.evil = e.target.checked;
     store.set('evil', S.evil);
@@ -513,6 +540,7 @@ function init() {
       return;
     }
     if (k === 'z') return undo();
+    if (k === 'f' && S.evil && !E.isFinished(S.game)) return setUnleash(!S.unleash);
     if (S.mode === 'real') {
       if (k === 'w') shoot(S.selected, 'miss');
       else if (k === 't') shoot(S.selected, 'hit');

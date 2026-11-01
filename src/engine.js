@@ -648,7 +648,7 @@ export function scoreCell(analysis, x, strategy) {
  *  3. Sonst nach Strategie; bei (fast) Gleichstand gewinnt ein Feld auf dem
  *     Paritätsraster, dann die höhere Trefferwahrscheinlichkeit.
  */
-export function chooseShot(g, analysis, strategy = 'infoPerMiss') {
+export function chooseShot(g, analysis, strategy = 'infoPerMiss', opts = {}) {
   const n = g.cells.length;
   const paritySet = new Set(analysis.parity.cells);
   const candidates = [];
@@ -660,8 +660,23 @@ export function chooseShot(g, analysis, strategy = 'infoPerMiss') {
   if (!candidates.length) return { cell: -1, ranking: [] };
 
   const sure = candidates.filter((x) => analysis.pShip[x] >= 1 - 1e-7);
-  const pool = sure.length ? sure : candidates;
-  const strat = sure.length ? 'entropy' : strategy;
+  const unsure = candidates.filter((x) => analysis.pShip[x] < 1 - 1e-7);
+  let pool, strat, finale = false;
+  if (opts.evil) {
+    // Evil-Modus 😈: sichere Treffer nur merken, erst weitersuchen und ganz am
+    // Ende alle auf einmal abschießen (Treffer = nochmal schießen -> eine Serie).
+    if (unsure.length) {
+      pool = unsure;
+      strat = strategy;
+    } else {
+      pool = sure;
+      strat = 'entropy';
+      finale = true;
+    }
+  } else {
+    pool = sure.length ? sure : candidates;
+    strat = sure.length ? 'entropy' : strategy;
+  }
 
   const ranking = pool
     .map((x) => ({
@@ -678,7 +693,13 @@ export function chooseShot(g, analysis, strategy = 'infoPerMiss') {
       if (a.parity !== b.parity) return a.parity ? -1 : 1;
       return b.p - a.p;
     });
-  return { cell: ranking[0].cell, ranking, sure: sure.length > 0 };
+  return {
+    cell: ranking[0].cell,
+    ranking,
+    sure: !opts.evil && sure.length > 0,
+    remembered: opts.evil ? sure : [], // Evil-Modus: gemerkte sichere Treffer
+    finale,
+  };
 }
 
 // ---------------------------------------------------------------------------

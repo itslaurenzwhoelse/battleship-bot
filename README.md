@@ -85,6 +85,17 @@ Reine Entropie schießt gern auf 50/50-Felder und verliert dadurch ~2,5 Fehlsch�
 „Info pro Fehlschuss“ und reine Wahrscheinlichkeit liegen gleichauf. Der Unterschied
 (−0,05 ± 0,06) ist statistisch nicht messbar.
 
+### 😈 Evil-Modus
+
+Sichere Treffer (100 %) werden nicht geschossen, sondern nur gemerkt (💀).
+Der Bot sucht erst weiter. Erst wenn alles feststeht, schießt er alle gemerkten
+Felder nacheinander ab. Wegen „Treffer = nochmal schießen“ ist das eine einzige
+Serie, der Gegner kommt nicht mehr dran.
+
+Benchmark (300 Spiele): 9,51 statt 9,02 Fehlschüsse, also ~0,5 mehr, weil die
+„Versenkt“-Info zwischendurch fehlt. Im Finale gab es 0 Fehlschüsse in 150 Spielen,
+die Schlussserie war im Schnitt 8 Treffer lang.
+
 ## Entwicklung
 
 ```bash

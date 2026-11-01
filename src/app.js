@@ -1,4 +1,4 @@
-import * as E from './engine.js?v=4';
+import * as E from './engine.js?v=5';
 
 // ---------------------------------------------------------------------------
 // Zustand
@@ -42,7 +42,7 @@ const pct = (v) => (v * 100).toFixed(v > 0 && v < 0.01 ? 1 : 0) + ' %';
 // ---------------------------------------------------------------------------
 let worker = null;
 try {
-  worker = new Worker(new URL('./worker.js?v=4', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.js?v=5', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => onResult(e.data);
   worker.onerror = () => { worker = null; recompute(); };
 } catch { worker = null; }
@@ -334,20 +334,38 @@ function renderFleet() {
   const g = S.game;
   const el = $('fleet');
   el.innerHTML = '';
+  const found = S.analysis?.found || [];
   for (const f of g.config.fleet) {
     const left = g.remaining[f.length] || 0;
+    const nFound = Math.min(left, found.filter((s) => s.length === f.length).length);
+    const searching = left - nFound;
     const row = document.createElement('div');
     row.className = 'ship-row';
     const ships = Array.from({ length: f.count }, (_, i) =>
-      `<span class="ship ${i < left ? '' : 'gone'}">${'<i></i>'.repeat(f.length)}</span>`).join('');
-    row.innerHTML = `<span class="label">${f.length}er: ${left}/${f.count}</span><span class="ships">${ships}</span>`;
+      `<span class="ship ${i < searching ? '' : i < left ? 'found' : 'gone'}"${i >= searching && i < left ? ' title="Position sicher bekannt"' : ''}>${'<i></i>'.repeat(f.length)}</span>`).join('');
+    const label = nFound
+      ? `${f.length}er: ${searching} gesucht · ${nFound} 💀`
+      : `${f.length}er: ${left}/${f.count}`;
+    row.innerHTML = `<span class="label">${label}</span><span class="ships">${ships}</span>`;
     el.appendChild(row);
   }
+  if (found.length) {
+    const note = document.createElement('div');
+    note.className = 'hint';
+    note.textContent = `💀 = Position sicher bekannt, aber noch nicht versenkt. Zählt nicht mehr für die Suche.`;
+    el.appendChild(note);
+  }
   const p = S.analysis?.parity;
+  if (p && !p.k && found.length && !E.isFinished(g)) {
+    const note = document.createElement('div');
+    note.className = 'hint';
+    note.textContent = 'Alle Schiffe gefunden – nur noch abschießen!';
+    el.appendChild(note);
+  }
   if (p && p.k) {
     const note = document.createElement('div');
     note.className = 'hint';
-    note.textContent = `Raster: jedes ${p.k}. Feld (kürzestes Schiff = ${p.k}, also ${p.k - 1} Lücken dazwischen).`;
+    note.textContent = `Raster: jedes ${p.k}. Feld (kürzestes gesuchtes Schiff = ${p.k}, also ${p.k - 1} Lücken dazwischen).`;
     el.appendChild(note);
   }
 }

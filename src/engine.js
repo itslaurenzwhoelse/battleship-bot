@@ -666,7 +666,10 @@ export function chooseShot(g, analysis, strategy = 'infoPerMiss', opts = {}) {
     // Evil-Modus 😈: sichere Treffer nur merken, erst weitersuchen und ganz am
     // Ende alle auf einmal abschießen (Treffer = nochmal schießen -> eine Serie).
     if (unsure.length) {
-      pool = unsure;
+      // Schüsse, die etwas versenken könnten, möglichst meiden – sonst ist die
+      // Überraschung am Ende kaputt.
+      const safe = unsure.filter((x) => analysis.pSunk[x] <= EPS);
+      pool = safe.length ? safe : unsure;
       strat = strategy;
     } else {
       pool = sure;

@@ -13,7 +13,8 @@
     <h1>Battleship Helfer</h1>
     <div class="mode" role="tablist" aria-label="Modus">
       <button id="mode-real" class="tab active" role="tab">Echtes Spiel</button>
-      <button id="mode-demo" class="tab" role="tab">Übung / Demo</button>
+      <button id="mode-train" class="tab" role="tab">Training</button>
+      <button id="mode-demo" class="tab" role="tab">Demo</button>
     </div>
   </header>
 
@@ -46,6 +47,8 @@
         <div class="rec-stats" id="rec-stats"></div>
       </div>
 
+      <div class="card report" id="report-card" hidden></div>
+
       <div class="card">
         <div class="sel-line">Ausgewählt: <b id="sel-cell">–</b> <span class="hint" id="sel-hint"></span></div>
         <div class="actions" id="real-actions">
@@ -53,6 +56,12 @@
           <button class="btn hit" data-res="hit">Treffer <kbd>T</kbd></button>
           <button class="btn sunk" data-res="sunk">Versenkt <kbd>V</kbd></button>
         </div>
+        <label class="chk blind-toggle" id="blind-wrap"><input type="checkbox" id="blind"> 🙈 Blind-Modus – keine Hilfe, Auswertung am Ende</label>
+        <div class="actions train-actions" id="train-actions" hidden>
+          <span class="hint">Klick auf ein Feld = Schuss. Der Computer sagt dir, wie gut der Zug war.</span>
+          <label class="chk"><input type="checkbox" id="train-help"> Hilfe einblenden (zählt nicht für den Fortschritt)</label>
+        </div>
+        <div class="coach" id="coach" hidden></div>
         <div class="actions" id="demo-actions" hidden>
           <button class="btn" id="demo-shoot">Ausgewähltes schießen <kbd>␣</kbd></button>
           <button class="btn" id="demo-bot">Bot-Zug <kbd>B</kbd></button>
@@ -66,6 +75,7 @@
           <button class="btn ghost" id="undo">↶ Rückgängig <kbd>Z</kbd></button>
           <button class="btn ghost" id="clear-cell">⌫ Feld leeren <kbd>L</kbd></button>
           <button class="btn ghost" id="new-game">Neues Spiel</button>
+          <button class="btn ghost" id="end-game" hidden>🏁 Spiel beenden &amp; auswerten</button>
         </div>
       </div>
 
@@ -85,6 +95,11 @@
         <dl class="stats" id="stats"></dl>
         <div class="top-list" id="top-list"></div>
       </div>
+
+      <details class="card" id="progress-card">
+        <summary class="card-title">📈 Fortschritt</summary>
+        <div id="progress"></div>
+      </details>
 
       <details class="card">
         <summary class="card-title">Einstellungen</summary>
@@ -122,6 +137,6 @@
     Rechnet über ganze Flottenaufstellungen (Stichprobe bzw. exakt). Details im <a href="https://github.com/itslaurenzwhoelse/battleship-bot">README</a>.
   </footer>
 
-  <script type="module" src="src/app.js?v=7"></script>
+  <script type="module" src="src/app.js?v=8"></script>
 </body>
 </html>

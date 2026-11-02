@@ -1,4 +1,4 @@
-import * as E from './engine.js?v=7';
+import * as E from './engine.js?v=8';
 
 // ---------------------------------------------------------------------------
 // Zustand
@@ -27,10 +27,21 @@ const S = {
   ms: 0,
   reqId: 0,
   busy: false,
-  truth: null,     // Demo: echte Aufstellung
+  truth: null,     // Demo/Training: echte Aufstellung
   reveal: false,
   auto: false,
+  blind: store.get('blind', false), // echtes Spiel ohne Hilfe, Auswertung am Ende
+  trainHelp: false,
+  queued: [],      // Schüsse, die auf die laufende Rechnung warten (Reihenfolge bleibt)
+  lastRating: null,
+  flash: null,     // {mine, best} kurz markieren
+  botResult: null, // Training: Bot auf derselben Aufstellung
 };
+
+/** Darf die App gerade Hilfe (Heatmap, Empfehlung) zeigen? */
+const helpVisible = () => S.mode === 'demo' || (S.mode === 'real' && !S.blind) || (S.mode === 'train' && S.trainHelp);
+/** Werden Züge bewertet und protokolliert? */
+const rating = () => S.mode === 'train' || S.mode === 'real';
 
 const $ = (id) => document.getElementById(id);
 const colName = (c) => String.fromCharCode(65 + c);
@@ -42,7 +53,7 @@ const pct = (v) => (v * 100).toFixed(v > 0 && v < 0.01 ? 1 : 0) + ' %';
 // ---------------------------------------------------------------------------
 let worker = null;
 try {
-  worker = new Worker(new URL('./worker.js?v=7', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.js?v=8', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => onResult(e.data);
   worker.onerror = () => { worker = null; recompute(); };
 } catch { worker = null; }
@@ -71,7 +82,8 @@ function onResult({ id, analysis, choice, ms }) {
   S.ms = ms;
   S.busy = false;
   document.body.classList.remove('busy');
-  if (!S.manualSelect || S.selected < 0 || S.game.cells[S.selected] !== E.UNKNOWN) {
+  // Auswahl auf die Empfehlung setzen – aber nur, wenn Hilfe sichtbar ist (sonst Spoiler)
+  if (helpVisible() && (!S.manualSelect || S.selected < 0 || S.game.cells[S.selected] !== E.UNKNOWN)) {
     S.selected = choice.cell;
     S.manualSelect = false;
   }
@@ -80,6 +92,23 @@ function onResult({ id, analysis, choice, ms }) {
   }
   render();
   if (S.auto) setTimeout(autoStep, 250);
+  if (S.queued.length) {
+    S.draining = true;
+    shoot(...S.queued.shift());
+    S.draining = false;
+  }
+}
+
+// Bot-Vergleich im Training: eigener Worker, damit die Analyse nicht wartet
+let botWorker = null;
+function runBotGame(ships, config, done) {
+  try {
+    if (!botWorker) botWorker = new Worker(new URL('./worker.js?v=8', import.meta.url), { type: 'module' });
+    botWorker.onmessage = (e) => { if (e.data.type === 'botgame') done(e.data.result); };
+    botWorker.postMessage({ type: 'botgame', id: 1, config, ships, samples: 8000 });
+  } catch {
+    setTimeout(() => done(E.simulateBotGame(config, ships, { samples: 4000 })), 20);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -108,8 +137,12 @@ function newGame() {
   S.selected = -1;
   S.manualSelect = false;
   S.reveal = false;
+  S.queued = [];
+  S.lastRating = null;
+  S.flash = null;
+  S.botResult = null;
   stopAuto();
-  if (S.mode === 'demo') {
+  if (S.mode === 'demo' || S.mode === 'train') {
     try { S.truth = E.randomFleet(S.config); } catch (e) { msg(e.message, 'err'); S.truth = null; }
   } else {
     S.truth = null;
@@ -171,6 +204,11 @@ function editCell(x, result, shipCells) {
   if (!r.ok) return msg(r.error, 'err');
   S.history.push(before);
   S.manualSelect = true;
+  const li = S.game.log.findIndex((e) => e.cell === x);
+  if (li >= 0) {
+    if (result === 'clear') S.game.log.splice(li, 1);
+    else S.game.log[li].result = result;
+  }
   msg(`${cellName(x)} geändert: ${STATE_NAME[v]} → ${result === 'sunk' ? `${r.sunkLength}er versenkt` : STATE_NAME[RESULT_STATE[result]]}.`, 'ok');
   saveGame();
   recompute();
@@ -189,13 +227,27 @@ function shoot(x, result, shipCells) {
   if (x < 0) return msg('Erst ein Feld auswählen.', 'err');
   const v = S.game.cells[x];
   if (S.mode === 'real' && (v === E.MISS || v === E.HIT || v === E.SUNK)) return editCell(x, result, shipCells);
-  if (E.isFinished(S.game)) return msg('Spiel ist vorbei – „Neues Spiel“ starten.', 'err');
+  if (E.isFinished(S.game) || S.game.ended) return msg('Spiel ist vorbei – „Neues Spiel“ starten.', 'err');
+  if (rating() && (S.busy || (S.queued.length && !S.draining))) { // Bewertung braucht die Rechnung zum aktuellen Stand
+    S.queued.push([x, result, shipCells]);
+    return;
+  }
+  const rated = rating() ? E.rateShot(S.game, S.analysis, x) : null;
   const before = E.cloneGame(S.game);
   const r = E.applyShot(S.game, x, result, shipCells);
   if (!r.ok && r.ambiguous) return askSunk(x, false, r.candidates);
   if (!r.ok) return msg(r.error, 'err');
   S.history.push(before);
   S.manualSelect = false;
+  if (rating()) {
+    S.game.log.push({ cell: x, result, rating: rated, helped: helpVisible() });
+    S.lastRating = rated ? { cell: x, result, ...rated } : null;
+    if (S.mode === 'train' && rated && rated.loss > 0.03) {
+      S.flash = { mine: x, best: rated.bestCell };
+      clearTimeout(S.flashTimer);
+      S.flashTimer = setTimeout(() => { S.flash = null; render(); }, 1600);
+    }
+  }
   if (result === 'sunk') {
     msg(`${cellName(x)}: ${r.sunkLength}er versenkt${S.game.config.touch === 'any' ? '' : ' – Rand gesperrt'}.`, 'ok');
   } else {
@@ -204,6 +256,7 @@ function shoot(x, result, shipCells) {
   if (E.isFinished(S.game)) {
     msg(`Alle Schiffe versenkt! ${S.game.shots} Schüsse, davon ${S.game.misses} Fehlschüsse.`, 'ok');
     stopAuto();
+    if (S.mode === 'train' || (S.mode === 'real' && S.blind)) finishGame();
   }
   saveGame();
   recompute();
@@ -219,6 +272,163 @@ function undo() {
   saveGame();
   recompute();
   render();
+}
+
+// ---------------------------------------------------------------------------
+// Auswertung & Fortschritt
+// ---------------------------------------------------------------------------
+const configKey = (c) => `${c.rows}×${c.cols} · ${c.fleet.map((f) => `${f.count}×${f.length}`).join(' ')}${c.touch === 'none' ? '' : c.touch === 'any' ? ' · berühren' : ' · über Eck'}`;
+
+/** Spiel beenden (fertig oder abgebrochen), bewerten und im Verlauf speichern. */
+function finishGame() {
+  const g = S.game;
+  g.ended = true;
+  if (S.mode === 'train' && S.truth) {
+    const truth = S.truth, cfg = g.config;
+    runBotGame(truth, cfg, (res) => {
+      if (S.game !== g) return;
+      S.botResult = res;
+      saveHistory(g, res.misses);
+      render();
+    });
+  } else {
+    saveHistory(g, null);
+  }
+  saveGame();
+  render();
+}
+
+function saveHistory(g, botMisses) {
+  if (g.saved) return;
+  const sum = E.summarizeLog(g.log);
+  if (!sum.moves) return;
+  g.saved = true;
+  const hist = store.get('history', []);
+  hist.push({
+    t: Date.now(), mode: S.mode, cfg: configKey(g.config), finished: E.isFinished(g),
+    shots: g.shots, misses: g.misses, accuracy: sum.accuracy, cost: sum.cost, moves: sum.moves,
+    botMisses, helped: sum.helped,
+  });
+  store.set('history', hist.slice(-500));
+}
+
+function renderReport() {
+  const card = $('report-card');
+  const g = S.game;
+  if (!g.ended || !(S.mode === 'train' || S.mode === 'real')) { card.hidden = true; return; }
+  const sum = E.summarizeLog(g.log);
+  card.hidden = false;
+  const c = sum.counts, L = E.RATING_LABELS;
+  const bot = S.mode === 'train'
+    ? `<div><b>${S.botResult ? S.botResult.misses : '…'}</b><span>Bot (gleiche Flotte)</span></div>` : '';
+  card.innerHTML = `
+    <div class="card-title">Auswertung${E.isFinished(g) ? '' : ' (abgebrochen)'}</div>
+    <div class="big">
+      <div><b>${g.misses}</b><span>deine Fehlschüsse</span></div>${bot}
+      <div><b>${Math.round(sum.accuracy * 100)} %</b><span>Genauigkeit</span></div>
+      <div><b>≈ ${sum.cost.toFixed(1).replace('.', ',')}</b><span>verschenkte Fehlschüsse</span></div>
+    </div>
+    <div class="counts">${['sure', 'best', 'good', 'inaccuracy', 'mistake', 'blunder'].filter((k) => c[k]).map((k) => `${L[k].icon} ${L[k].text} ${c[k]}`).join(' · ')}</div>
+    ${sum.helped ? '<p class="hint">Mit Hilfe gespielt – zählt nicht für den Fortschritt.</p>' : ''}
+    ${sum.worst.length ? `<div class="hint">Größte Fehler (antippen zum Zeigen):</div><ol>${sum.worst.map((e) =>
+      `<li data-mine="${e.cell}" data-best="${e.rating.bestCell}">Zug ${e.move}: ${cellName(e.cell)} (${pct(e.rating.p)}) – besser ${cellName(e.rating.bestCell)} (${pct(e.rating.pBest)})</li>`).join('')}</ol>` : '<p class="hint">Keine nennenswerten Fehler – stark! 🎯</p>'}
+    <p class="hint">Genauigkeit = deine Trefferchancen im Verhältnis zum jeweils besten Feld. „Verschenkt“ = so viele Fehlschüsse hast du durch die Zugwahl im Schnitt mehr riskiert als nötig.</p>`;
+  card.querySelectorAll('li[data-mine]').forEach((li) => li.addEventListener('click', () => {
+    S.flash = { mine: +li.dataset.mine, best: +li.dataset.best };
+    clearTimeout(S.flashTimer);
+    S.flashTimer = setTimeout(() => { S.flash = null; render(); }, 2500);
+    render();
+  }));
+}
+
+function renderCoach() {
+  const box = $('coach');
+  const r = S.lastRating;
+  if (S.mode !== 'train' || !r || S.game.ended) { box.hidden = true; return; }
+  box.hidden = false;
+  const L = E.RATING_LABELS[r.label];
+  box.className = 'coach ' + r.label;
+  const res = r.result === 'miss' ? 'Wasser' : r.result === 'hit' ? 'Treffer' : 'Versenkt';
+  let detail = `${cellName(r.cell)} hatte ${pct(r.p)} Trefferchance.`;
+  if (r.label === 'sure') detail = `${cellName(r.cell)} war ein sicherer Treffer.`;
+  else if (r.label === 'blunder') detail = `${cellName(r.cell)} war sicher Wasser – z. B. diagonal neben einem Treffer oder am Rand eines versenkten Schiffs. Besser: ${cellName(r.bestCell)} (${pct(r.pBest)}).`;
+  else if (r.loss > 0.03) detail += ` Besser: ${cellName(r.bestCell)} (${pct(r.pBest)}).`;
+  if (r.sureAvailable && r.label !== 'sure') detail += ' Tipp: Es gab einen sicheren Treffer – der kostet nie einen Zug.';
+  box.innerHTML = `<b>${L.icon} ${L.text}</b> · ${res}<br>${detail}`;
+}
+
+function renderProgress() {
+  const el = $('progress');
+  const key = configKey(S.config);
+  const all = store.get('history', []);
+  const hist = all.filter((h) => h.cfg === key && !h.helped);
+  if (!hist.length) {
+    el.innerHTML = `<p class="hint">Noch keine Spiele mit diesen Regeln (${key}). Spiel ein Training oder ein echtes Spiel im Blind-Modus – danach erscheint hier dein Verlauf.</p>`;
+    return;
+  }
+  const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+  const last5 = hist.slice(-5), before = hist.slice(-10, -5);
+  const done5 = hist.filter((h) => h.finished).slice(-5);
+  const acc5 = mean(last5.map((h) => h.accuracy));
+  const trend = before.length ? acc5 - mean(before.map((h) => h.accuracy)) : null;
+  const train = hist.filter((h) => h.mode === 'train' && h.botMisses != null && h.finished);
+  const gap = train.length ? mean(train.slice(-5).map((h) => h.misses - h.botMisses)) : null;
+  const fmt = (v, d = 1) => v.toFixed(d).replace('.', ',');
+  // Diagramm: Genauigkeit je Spiel (eine Serie, kein Legendenkasten nötig)
+  const pts = hist.slice(-30);
+  const W = 300, H = 120, padL = 26, padR = 8, padT = 8, padB = 18;
+  const lo = Math.min(0.5, ...pts.map((h) => h.accuracy)), hi = 1;
+  const xs = (i) => padL + (pts.length === 1 ? (W - padL - padR) / 2 : (i * (W - padL - padR)) / (pts.length - 1));
+  const ys = (v) => padT + ((hi - v) * (H - padT - padB)) / (hi - lo);
+  const ticks = [lo, (lo + hi) / 2, hi];
+  const line = pts.map((h, i) => `${i ? 'L' : 'M'}${xs(i).toFixed(1)},${ys(h.accuracy).toFixed(1)}`).join(' ');
+  const date = (t) => new Date(t).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+  const label = (h, i) => `Spiel ${hist.length - pts.length + i + 1} (${date(h.t)}, ${h.mode === 'train' ? 'Training' : 'echt'}): Genauigkeit ${Math.round(h.accuracy * 100)} %, ${h.misses} Fehlschüsse${h.botMisses != null ? `, Bot ${h.botMisses}` : ''}`;
+  el.innerHTML = `
+    <div class="prog-sum">
+      <div><b>${Math.round(acc5 * 100)} %</b><span>Ø Genauigkeit (letzte 5)</span></div>
+      <div><b>${trend == null ? '–' : (trend >= 0 ? '+' : '−') + fmt(Math.abs(trend) * 100) + ' P.'}</b><span>Trend ggü. den 5 davor</span></div>
+      <div><b>${done5.length ? fmt(mean(done5.map((h) => h.misses))) : '–'}</b><span>Ø Fehlschüsse (letzte 5 fertigen)</span></div>
+      <div><b>${gap == null ? '–' : (gap >= 0 ? '+' : '−') + fmt(Math.abs(gap))}</b><span>Fehlschüsse mehr als der Bot (Training)</span></div>
+    </div>
+    <svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Genauigkeit pro Spiel">
+      ${ticks.map((t) => `<line class="grid" x1="${padL}" x2="${W - padR}" y1="${ys(t)}" y2="${ys(t)}"/><text class="axis" x="${padL - 4}" y="${ys(t) + 3}" text-anchor="end">${Math.round(t * 100)}%</text>`).join('')}
+      <path class="line" d="${line}"/>
+      ${pts.map((h, i) => `<g data-i="${i}"><circle class="hit" cx="${xs(i)}" cy="${ys(h.accuracy)}" r="10"/><circle class="dot" cx="${xs(i)}" cy="${ys(h.accuracy)}" r="4"/></g>`).join('')}
+      <text class="axis" x="${padL}" y="${H - 4}">älter</text><text class="axis" x="${W - padR}" y="${H - 4}" text-anchor="end">neuer</text>
+    </svg>
+    <div class="chart-tip" id="chart-tip">Genauigkeit pro Spiel – Punkt antippen für Details.</div>
+    <p class="hint">Die Genauigkeit schwankt weniger als die Fehlschüsse (die hängen stark vom Glück ab). Steigt sie über mehrere Spiele, wird deine Intuition besser. Nur Spiele ohne Hilfe zählen.</p>
+    <details><summary class="hint">Alle Spiele als Tabelle</summary>
+      <table class="prog-table"><thead><tr><th>Datum</th><th>Art</th><th>Genau.</th><th>Fehl</th><th>Bot</th></tr></thead><tbody>
+      ${hist.slice().reverse().map((h) => `<tr><td>${date(h.t)}</td><td>${h.mode === 'train' ? 'Training' : 'echt'}${h.finished ? '' : '*'}</td><td>${Math.round(h.accuracy * 100)} %</td><td>${h.misses}</td><td>${h.botMisses ?? '–'}</td></tr>`).join('')}
+      </tbody></table>
+      <p class="hint">* abgebrochen</p>
+      <button class="btn ghost small" id="clear-history">Verlauf löschen</button>
+    </details>`;
+  const tip = el.querySelector('#chart-tip');
+  el.querySelectorAll('g[data-i]').forEach((gEl) => {
+    const show = () => {
+      el.querySelectorAll('.dot.on').forEach((d) => d.classList.remove('on'));
+      gEl.querySelector('.dot').classList.add('on');
+      tip.textContent = label(pts[+gEl.dataset.i], +gEl.dataset.i);
+    };
+    gEl.addEventListener('mouseenter', show);
+    gEl.addEventListener('click', show);
+  });
+  el.querySelector('#clear-history').addEventListener('click', () => {
+    if (!confirm('Gesamten Verlauf löschen?')) return;
+    store.set('history', all.filter((h) => h.cfg !== key));
+    renderProgress();
+  });
+}
+
+function trainShoot(x) {
+  if (!S.truth || S.game.ended) return;
+  const cur = S.game.cells[x];
+  if (cur !== E.UNKNOWN && cur !== E.BLOCKED) return msg('Feld wurde schon beschossen.', 'err');
+  const res = E.resolveShot(S.game, S.truth, x);
+  shoot(x, res, res === 'sunk' ? E.shipAt(S.truth, x) : undefined);
 }
 
 function demoShoot(x) {
@@ -248,7 +458,7 @@ function stopAuto() {
 function saveGame() {
   if (S.mode !== 'real') return;
   const g = S.game;
-  store.set('game', { config: g.config, cells: Array.from(g.cells), remaining: g.remaining, sunkShips: g.sunkShips, shots: g.shots, misses: g.misses });
+  store.set('game', { config: g.config, cells: Array.from(g.cells), remaining: g.remaining, sunkShips: g.sunkShips, shots: g.shots, misses: g.misses, log: g.log, ended: g.ended, saved: g.saved });
 }
 
 function loadGame() {
@@ -256,7 +466,7 @@ function loadGame() {
   if (!saved || JSON.stringify(E.normalizeConfig(saved.config)) !== JSON.stringify(E.normalizeConfig(S.config))) return false;
   const g = E.newGame(saved.config);
   g.cells.set(saved.cells);
-  Object.assign(g, { remaining: saved.remaining, sunkShips: saved.sunkShips, shots: saved.shots, misses: saved.misses });
+  Object.assign(g, { remaining: saved.remaining, sunkShips: saved.sunkShips, shots: saved.shots, misses: saved.misses, log: saved.log || [], ended: !!saved.ended, saved: !!saved.saved });
   S.game = g;
   return true;
 }
@@ -299,6 +509,7 @@ function buildBoard() {
 }
 
 function onCellClick(x) {
+  if (S.mode === 'train') return trainShoot(x);
   S.selected = x;
   S.manualSelect = true;
   render();
@@ -308,12 +519,13 @@ const HEAT = { prob: '#f59e0b', entropy: '#8b5cf6' };
 
 function render() {
   const g = S.game;
-  const a = S.analysis;
+  const help = helpVisible();
+  const a = help ? S.analysis : null;
   const n = g.cells.length;
   const parity = new Set(S.showParity && a ? a.parity.cells : []);
-  const best = S.choice?.cell ?? -1;
-  const remembered = new Set(S.choice?.remembered || []);
-  const ranks = new Map((S.choice?.ranking || []).slice(0, 5).map((r, i) => [r.cell, i + 1]));
+  const best = help ? S.choice?.cell ?? -1 : -1;
+  const remembered = new Set(help ? S.choice?.remembered || [] : []);
+  const ranks = new Map(help ? (S.choice?.ranking || []).slice(0, 5).map((r, i) => [r.cell, i + 1]) : []);
   const truthCells = new Set(S.reveal && S.truth ? S.truth.flat() : []);
   // Farbskala relativ zum aktuell stärksten Feld (sonst sieht alles gleich aus)
   let maxEnt = 0, maxP = 0;
@@ -344,6 +556,8 @@ function render() {
     if (remembered.has(x) && x !== best && v === E.UNKNOWN) cls.push('remembered');
     if (x === S.selected) cls.push('selected');
     if (truthCells.has(x) && v !== E.SUNK) cls.push('reveal-ship');
+    if (S.flash && x === S.flash.best) cls.push('coach-best');
+    if (S.flash && x === S.flash.mine) cls.push('coach-mine');
     el.className = cls.join(' ');
     el.style.background = bg;
     el.style.color = bg && cls.includes('dark-text') ? '#141821' : '';
@@ -368,7 +582,17 @@ function render() {
     : `🔥 Alles abfeuern${nRem ? ` (${nRem} 💀)` : ''} <kbd>F</kbd>`;
 
   // Empfehlung
-  if (done) {
+  document.querySelector('#rec-card .rec-title').textContent = help ? 'Empfehlung' : 'Status';
+  document.querySelector('.sel-line').hidden = S.mode === 'train';
+  if (!help) {
+    $('rec-cell').textContent = S.mode === 'train' ? '🎯' : '🙈';
+    $('rec-cell').classList.remove('finale');
+    $('rec-stats').innerHTML = g.ended
+      ? 'Spiel ausgewertet – siehe unten.'
+      : S.mode === 'train'
+        ? `Training: Schieß nach Gefühl. ${g.shots} Schüsse, ${g.misses} Fehlschüsse.`
+        : 'Blind-Modus: keine Hilfe. Trag deine Schüsse wie gewohnt ein – am Ende gibt es die Auswertung.';
+  } else if (done) {
     $('rec-cell').textContent = '🎉';
     $('rec-cell').classList.remove('finale');
     $('rec-stats').textContent = `Fertig: ${g.shots} Schüsse, ${g.misses} Fehlschüsse.`;
@@ -392,7 +616,7 @@ function render() {
   $('sel-cell').textContent = sel >= 0 ? cellName(sel) : '–';
   let hint = '';
   const sv = sel >= 0 ? g.cells[sel] : -1;
-  if (sv === E.UNKNOWN && a) hint = `(Treffer ${pct(a.pShip[sel])})`;
+  if (sv === E.UNKNOWN && a && help) hint = `(Treffer ${pct(a.pShip[sel])})`;
   else if (S.mode === 'real' && (sv === E.MISS || sv === E.HIT || sv === E.SUNK)) {
     hint = `(${STATE_NAME[sv]} – zum Ändern anderen Knopf drücken oder leeren)`;
   } else if (sv === E.BLOCKED) hint = '(automatisch gesperrt)';
@@ -401,8 +625,14 @@ function render() {
   clr.hidden = S.mode !== 'real';
   clr.disabled = !(sv === E.MISS || sv === E.HIT || sv === E.SUNK);
   $('undo').disabled = !S.history.length;
+  $('undo').hidden = S.mode === 'train';
+  $('blind-wrap').hidden = S.mode !== 'real';
+  $('end-game').hidden = !(S.mode === 'real' && S.blind && g.shots > 0 && !g.ended);
 
   renderSunkChoice();
+  renderCoach();
+  renderReport();
+  renderProgress();
   renderFleet();
   renderStats();
 }
@@ -411,7 +641,8 @@ function renderFleet() {
   const g = S.game;
   const el = $('fleet');
   el.innerHTML = '';
-  const found = S.analysis?.found || [];
+  const help = helpVisible();
+  const found = help ? S.analysis?.found || [] : [];
   for (const f of g.config.fleet) {
     const left = g.remaining[f.length] || 0;
     const nFound = Math.min(left, found.filter((s) => s.length === f.length).length);
@@ -432,7 +663,7 @@ function renderFleet() {
     note.textContent = `💀 = Position sicher bekannt, aber noch nicht versenkt. Zählt nicht mehr für die Suche.`;
     el.appendChild(note);
   }
-  const p = S.analysis?.parity;
+  const p = help ? S.analysis?.parity : null;
   if (p && !p.k && found.length && !E.isFinished(g)) {
     const note = document.createElement('div');
     note.className = 'hint';
@@ -461,6 +692,11 @@ function renderStats() {
     const e = Math.floor(Math.log10(c));
     return `≈ ${(c / 10 ** e).toFixed(1).replace('.', ',')}·10^${e}`;
   };
+  if (!helpVisible()) {
+    $('stats').innerHTML = `<dt>Schüsse</dt><dd>${g.shots}</dd><dt>Fehlschüsse</dt><dd>${g.misses}</dd>`;
+    $('top-list').innerHTML = '';
+    return;
+  }
   const rows = [
     ['Schüsse', g.shots],
     ['Fehlschüsse', g.misses],
@@ -604,8 +840,10 @@ function applySettings() {
 function setMode(mode) {
   S.mode = mode;
   $('mode-real').classList.toggle('active', mode === 'real');
+  $('mode-train').classList.toggle('active', mode === 'train');
   $('mode-demo').classList.toggle('active', mode === 'demo');
   $('real-actions').hidden = mode !== 'real';
+  $('train-actions').hidden = mode !== 'train';
   $('demo-actions').hidden = mode !== 'demo';
   S.unleash = mode === 'real' ? store.get('unleash', false) : false;
   if (mode === 'real' && loadGame()) {
@@ -659,11 +897,25 @@ function init() {
     b.addEventListener('click', () => shoot(S.selected, b.dataset.res)));
   $('undo').addEventListener('click', undo);
   $('new-game').addEventListener('click', () => {
-    if (S.mode === 'real' && S.game.shots > 0 && !E.isFinished(S.game) && !confirm('Laufendes Spiel verwerfen?')) return;
+    if (S.mode === 'real' && S.game.shots > 0 && !E.isFinished(S.game) && !S.game.ended && !confirm('Laufendes Spiel verwerfen?')) return;
     newGame();
   });
   $('mode-real').addEventListener('click', () => S.mode !== 'real' && setMode('real'));
   $('mode-demo').addEventListener('click', () => S.mode !== 'demo' && setMode('demo'));
+  $('mode-train').addEventListener('click', () => S.mode !== 'train' && setMode('train'));
+  $('blind').checked = S.blind;
+  $('blind').addEventListener('change', (e) => {
+    S.blind = e.target.checked;
+    store.set('blind', S.blind);
+    msg(S.blind ? '🙈 Blind-Modus an – ab jetzt keine Hilfe.' : 'Blind-Modus aus – die restlichen Züge zählen als „mit Hilfe“.');
+    render();
+  });
+  $('end-game').addEventListener('click', () => {
+    if (!confirm('Spiel jetzt beenden und auswerten? (z. B. wenn deine Gegnerin gewonnen hat)')) return;
+    finishGame();
+    msg('Spiel beendet – Auswertung siehe oben.', 'ok');
+  });
+  $('train-help').addEventListener('change', (e) => { S.trainHelp = e.target.checked; render(); });
   $('demo-shoot').addEventListener('click', () => demoShoot(S.selected));
   $('demo-bot').addEventListener('click', botMove);
   $('demo-auto').addEventListener('click', () => {
@@ -697,7 +949,9 @@ function init() {
       if (k === 'arrowdown' && r < rows - 1) x += cols;
       if (k === 'arrowleft' && c > 0) x -= 1;
       if (k === 'arrowright' && c < cols - 1) x += 1;
-      onCellClick(x);
+      S.selected = x;
+      S.manualSelect = true;
+      render();
       return;
     }
     if (k === 'z') return undo();
@@ -707,6 +961,8 @@ function init() {
       else if (k === 'w') shoot(S.selected, 'miss');
       else if (k === 't') shoot(S.selected, 'hit');
       else if (k === 'v') shoot(S.selected, 'sunk');
+    } else if (S.mode === 'train') {
+      if (k === ' ' || k === 'enter') { e.preventDefault(); trainShoot(S.selected); }
     } else {
       if (k === ' ' || k === 'enter') { e.preventDefault(); demoShoot(S.selected); }
       else if (k === 'b') botMove();

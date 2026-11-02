@@ -198,6 +198,13 @@ kbd { font-size: 10px; opacity: .7; font-family: inherit; border: 1px solid curr
 .top-list th:first-child, .top-list td:first-child { text-align: left; }
 .top-list tr { cursor: pointer; }
 
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; align-self: flex-start; }
+.seg button { border: 0; background: var(--bg); padding: 6px 12px; cursor: pointer; color: var(--text); font-size: 13px; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.active { background: var(--accent); color: #fff; }
+.sunk-choice { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.sunk-choice .btn { font-size: 13px; padding: 6px 10px; }
+.cell.cand { box-shadow: inset 0 0 0 3px var(--sunk); }
 .presets { display: flex; flex-wrap: wrap; gap: 6px; }
 .presets .btn { font-weight: 500; font-size: 13px; padding: 5px 9px; }
 .presets .btn.active { border-color: var(--accent); color: var(--accent); }

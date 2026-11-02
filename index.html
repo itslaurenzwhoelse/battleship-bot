@@ -61,6 +61,7 @@
         </div>
         <button class="btn fire" id="fire" hidden>🔥 Alles abfeuern <kbd>F</kbd></button>
         <div class="msg" id="msg" role="status"></div>
+        <div class="sunk-choice" id="sunk-choice" hidden></div>
         <div class="row-btns">
           <button class="btn ghost" id="undo">↶ Rückgängig <kbd>Z</kbd></button>
           <button class="btn ghost" id="clear-cell">⌫ Feld leeren <kbd>L</kbd></button>
@@ -99,7 +100,14 @@
             <div id="cfg-fleet"></div>
             <div class="hint" id="cfg-summary"></div>
           </div>
-          <label class="chk"><input type="checkbox" id="cfg-diag"> Schiffe dürfen sich diagonal berühren</label>
+          <div class="field">Schiffe dürfen sich berühren
+            <div class="seg" id="cfg-touch" role="radiogroup">
+              <button type="button" data-touch="none">Nein</button>
+              <button type="button" data-touch="diagonal">Nur über Eck</button>
+              <button type="button" data-touch="any">Ja</button>
+            </div>
+            <div class="hint" id="cfg-touch-hint"></div>
+          </div>
           <label class="field">Stichproben pro Rechnung <input type="number" id="cfg-samples" min="1000" max="200000" step="1000"></label>
           <div class="row-btns">
             <button class="btn" id="cfg-apply">Übernehmen &amp; neues Spiel</button>
@@ -114,6 +122,6 @@
     Rechnet über ganze Flottenaufstellungen (Stichprobe bzw. exakt). Details im <a href="https://github.com/itslaurenzwhoelse/battleship-bot">README</a>.
   </footer>
 
-  <script type="module" src="src/app.js?v=6"></script>
+  <script type="module" src="src/app.js?v=7"></script>
 </body>
 </html>

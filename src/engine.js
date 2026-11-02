@@ -23,7 +23,9 @@ export const DEFAULT_CONFIG = {
     { length: 4, count: 3 },
     { length: 3, count: 5 },
   ],
-  diagonalTouch: false, // false = Schiffe dürfen sich auch diagonal nicht berühren
+  // Berühren: 'none' = gar nicht (auch nicht diagonal), 'diagonal' = nur über Eck,
+  // 'any' = beliebig (Schiffe dürfen direkt aneinander liegen, nur nicht überlappen)
+  touch: 'none',
 };
 
 // ---------------------------------------------------------------------------
@@ -32,17 +34,19 @@ export const DEFAULT_CONFIG = {
 
 const geometryCache = new Map();
 
-export function getGeometry(rows, cols, diagonalTouch, lengths) {
-  const key = `${rows}x${cols}:${diagonalTouch ? 1 : 0}:${[...lengths].sort().join(',')}`;
+export const TOUCH_MODES = ['none', 'diagonal', 'any'];
+
+export function getGeometry(rows, cols, touch, lengths) {
+  const key = `${rows}x${cols}:${touch}:${[...lengths].sort().join(',')}`;
   let g = geometryCache.get(key);
   if (!g) {
-    g = buildGeometry(rows, cols, diagonalTouch, lengths);
+    g = buildGeometry(rows, cols, touch, lengths);
     geometryCache.set(key, g);
   }
   return g;
 }
 
-function buildGeometry(rows, cols, diagonalTouch, lengths) {
+function buildGeometry(rows, cols, touch, lengths) {
   const n = rows * cols;
   const W = Math.ceil(n / 32);
   const uniqueLengths = [...new Set(lengths)].sort((a, b) => b - a);
@@ -54,7 +58,8 @@ function buildGeometry(rows, cols, diagonalTouch, lengths) {
       for (let dr = -1; dr <= 1; dr++) {
         for (let dc = -1; dc <= 1; dc++) {
           if (!dr && !dc) continue;
-          if (diagonalTouch && dr && dc) continue;
+          if (touch === 'any') continue; // kein Sperr-Rand
+          if (touch === 'diagonal' && dr && dc) continue;
           const rr = r + dr, cc = c + dc;
           if (rr >= 0 && rr < rows && cc >= 0 && cc < cols) list.push(rr * cols + cc);
         }
@@ -111,7 +116,7 @@ function buildGeometry(rows, cols, diagonalTouch, lengths) {
       byCell: byCell.map((a) => Int32Array.from(a)),
     });
   }
-  return { rows, cols, n, W, diagonalTouch, neighbors, byLength, lengths: uniqueLengths };
+  return { rows, cols, n, W, touch, neighbors, byLength, lengths: uniqueLengths };
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +140,9 @@ export function normalizeConfig(config) {
     .filter((f) => f.count > 0 && f.length > 0)
     .map((f) => ({ length: f.length | 0, count: f.count | 0 }))
     .sort((a, b) => b.length - a.length);
-  return { rows: config.rows | 0, cols: config.cols | 0, fleet, diagonalTouch: !!config.diagonalTouch };
+  // Ältere gespeicherte Einstellungen kennen nur diagonalTouch (true/false)
+  const touch = TOUCH_MODES.includes(config.touch) ? config.touch : config.diagonalTouch ? 'diagonal' : 'none';
+  return { rows: config.rows | 0, cols: config.cols | 0, fleet, touch };
 }
 
 export function cloneGame(g) {
@@ -158,8 +165,8 @@ export function isFinished(g) {
 }
 
 function neighborsOf(g, x) {
-  const { rows, cols, diagonalTouch } = g.config;
-  return getGeometry(rows, cols, diagonalTouch, g.config.fleet.map((f) => f.length)).neighbors[x];
+  const { rows, cols, touch } = g.config;
+  return getGeometry(rows, cols, touch, g.config.fleet.map((f) => f.length)).neighbors[x];
 }
 
 /** Orthogonal zusammenhängende Treffer-Gruppe, zu der Feld x gehört. */
@@ -186,10 +193,40 @@ export function hitComponent(g, x) {
 }
 
 /**
- * Trägt ein Schussergebnis ein. result: 'miss' | 'hit' | 'sunk'.
- * Gibt {ok:true} oder {ok:false, error} zurück (Zustand bleibt dann unverändert).
+ * Wenn Schiffe sich berühren dürfen: Welche geraden Treffer-Linien durch x
+ * könnten das gerade versenkte Schiff sein? (x zählt als Treffer.)
  */
-export function applyShot(g, x, result) {
+export function sunkCandidates(g, x) {
+  const { rows, cols } = g.config;
+  const isHit = (y) => y === x || g.cells[y] === HIT;
+  const r0 = Math.floor(x / cols), c0 = x % cols;
+  const out = [];
+  for (const [lenStr, cnt] of Object.entries(g.remaining)) {
+    const len = +lenStr;
+    if (!cnt) continue;
+    const dirs = len === 1 ? [[0, 1]] : [[0, 1], [1, 0]];
+    for (const [dr, dc] of dirs) {
+      for (let off = 0; off < len; off++) {
+        const rs = r0 - dr * off, cs = c0 - dc * off;
+        const re = rs + dr * (len - 1), ce = cs + dc * (len - 1);
+        if (rs < 0 || cs < 0 || re >= rows || ce >= cols) continue;
+        const cells = [];
+        for (let i = 0; i < len; i++) cells.push((rs + dr * i) * cols + cs + dc * i);
+        if (cells.every(isHit)) out.push(cells);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Trägt ein Schussergebnis ein. result: 'miss' | 'hit' | 'sunk'.
+ * shipCells (optional, nur bei 'sunk'): Felder des versenkten Schiffs – nötig,
+ * wenn Schiffe sich berühren dürfen und es mehrere Möglichkeiten gibt.
+ * Gibt {ok:true} oder {ok:false, error} zurück (Zustand bleibt dann unverändert).
+ * Bei Mehrdeutigkeit: {ok:false, ambiguous:true, candidates}.
+ */
+export function applyShot(g, x, result, shipCells) {
   const cur = g.cells[x];
   if (result === 'miss') {
     if (cur !== UNKNOWN && cur !== BLOCKED) return { ok: false, error: 'Feld ist schon belegt.' };
@@ -208,6 +245,30 @@ export function applyShot(g, x, result) {
     return { ok: true };
   }
   // versenkt
+  if (g.config.touch === 'any') {
+    const cands = sunkCandidates(g, x);
+    let ship = null;
+    if (shipCells) {
+      const key = [...shipCells].sort((a, b) => a - b).join(',');
+      ship = cands.find((c) => [...c].sort((a, b) => a - b).join(',') === key) || null;
+      if (!ship) { g.cells[x] = prev; return { ok: false, error: 'Diese Felder passen nicht als versenktes Schiff.' }; }
+    } else if (cands.length === 1) {
+      ship = cands[0];
+    } else if (!cands.length) {
+      g.cells[x] = prev;
+      const left = Object.entries(g.remaining).filter(([, c]) => c > 0).map(([l]) => l + 'er').join(', ');
+      return { ok: false, error: `Keine passende Treffer-Linie für ein übriges Schiff (${left || 'nichts'}).` };
+    } else {
+      g.cells[x] = prev;
+      return { ok: false, ambiguous: true, candidates: cands, error: 'Welches Schiff wurde versenkt?' };
+    }
+    if (prev === UNKNOWN) g.shots++;
+    for (const y of ship) g.cells[y] = SUNK;
+    g.remaining[ship.length]--;
+    const cells = [...ship].sort((a, b) => a - b);
+    g.sunkShips.push({ length: ship.length, cells });
+    return { ok: true, sunkLength: ship.length, cells };
+  }
   const comp = hitComponent(g, x);
   const { cols } = g.config;
   const rowsSet = new Set(comp.map((y) => Math.floor(y / cols)));
@@ -264,7 +325,7 @@ function rebuildDerived(g) {
  * "entsenkt" (seine übrigen Felder bleiben Treffer).
  * Bei Fehler bleibt der Zustand unverändert.
  */
-export function editCell(g, x, result) {
+export function editCell(g, x, result, shipCells) {
   const backup = cloneGame(g);
   const restore = (error) => {
     Object.assign(g, cloneGame(backup));
@@ -284,8 +345,12 @@ export function editCell(g, x, result) {
   if (g.cells[x] === MISS || g.cells[x] === HIT) g.cells[x] = UNKNOWN;
   rebuildDerived(g);
   if (result === 'clear') return { ok: true };
-  const r = applyShot(g, x, result);
-  if (!r.ok) return restore(r.error);
+  const r = applyShot(g, x, result, shipCells);
+  if (!r.ok) {
+    const res = restore(r.error);
+    if (r.ambiguous) Object.assign(res, { ambiguous: true, candidates: r.candidates });
+    return res;
+  }
   rebuildDerived(g);
   return r;
 }
@@ -305,9 +370,9 @@ function makeRng(seed) {
 }
 
 function buildContext(g) {
-  const { rows, cols, diagonalTouch } = g.config;
+  const { rows, cols, touch } = g.config;
   const lengths = g.config.fleet.map((f) => f.length);
-  const geo = getGeometry(rows, cols, diagonalTouch, lengths);
+  const geo = getGeometry(rows, cols, touch, lengths);
   const { W, n } = geo;
   const forbidden = new Int32Array(W); // Wasser, versenkte Schiffe und deren Rand
   const hits = new Int32Array(W); // Treffer, die noch zu keinem versenkten Schiff gehören
@@ -786,7 +851,7 @@ export function chooseShot(g, analysis, strategy = 'infoPerMiss', opts = {}) {
  */
 export function randomFleet(config = DEFAULT_CONFIG, rng = Math.random) {
   const cfg = normalizeConfig(config);
-  const geo = getGeometry(cfg.rows, cfg.cols, cfg.diagonalTouch, cfg.fleet.map((f) => f.length));
+  const geo = getGeometry(cfg.rows, cfg.cols, cfg.touch, cfg.fleet.map((f) => f.length));
   const { W } = geo;
   const F = new Int32Array(W);
   for (let attempt = 0; attempt < 5_000_000; attempt++) {
@@ -805,6 +870,11 @@ export function randomFleet(config = DEFAULT_CONFIG, rng = Math.random) {
     if (ok) return ships;
   }
   throw new Error('Keine gültige Aufstellung gefunden – passt die Flotte aufs Feld?');
+}
+
+/** Schiff (Liste von Feldern), das auf Feld x liegt, oder undefined. */
+export function shipAt(ships, x) {
+  return ships.find((s) => s.includes(x));
 }
 
 /** Ergebnis eines Schusses gegen eine bekannte Aufstellung. */

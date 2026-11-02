@@ -18,7 +18,8 @@ function playGame(ships, strategy, samples, seed) {
     const evil = strategy === 'evil';
     const { cell } = E.chooseShot(g, a, evil ? 'infoPerMiss' : strategy, { evil });
     if (cell < 0) throw new Error('kein Zug gefunden');
-    const r = E.applyShot(g, cell, E.resolveShot(g, ships, cell));
+    const res = E.resolveShot(g, ships, cell);
+    const r = E.applyShot(g, cell, res, res === 'sunk' ? E.shipAt(ships, cell) : undefined);
     if (!r.ok) throw new Error(r.error);
   }
   return { shots: g.shots, misses: g.misses };

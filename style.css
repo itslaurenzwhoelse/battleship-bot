@@ -198,6 +198,19 @@ kbd { font-size: 10px; opacity: .7; font-family: inherit; border: 1px solid curr
 .top-list th:first-child, .top-list td:first-child { text-align: left; }
 .top-list tr { cursor: pointer; }
 
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.presets .btn { font-weight: 500; font-size: 13px; padding: 5px 9px; }
+.presets .btn.active { border-color: var(--accent); color: var(--accent); }
+.step-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text); margin-bottom: 6px; font-size: 14px; }
+.step-line .ship-pre { display: inline-flex; align-items: center; gap: 8px; }
+.step-line .ship-pre .ship i { width: 9px; height: 9px; }
+.step-line.off { color: var(--muted); }
+.step-line.off .ship i { background: var(--blocked); }
+.stepper { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.stepper button { border: 0; color: var(--text); background: var(--bg); width: 34px; height: 32px; cursor: pointer; font-size: 18px; line-height: 1; }
+.stepper button:hover { background: var(--border); }
+.stepper button:disabled { opacity: .35; cursor: not-allowed; }
+.stepper output { min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; font-weight: 600; }
 .settings .fleet-line { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; color: var(--text); }
 .settings .fleet-line input { width: 64px; border: 1px solid var(--border); background: var(--bg); border-radius: 8px; padding: 4px 6px; }
 

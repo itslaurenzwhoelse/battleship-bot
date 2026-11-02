@@ -11,7 +11,12 @@ jedem Zug neu:
   gestrichen. Raster und Rechnung passen sich an.
 - **Übung/Demo**: Der Computer versteckt eine Zufallsaufstellung. Du kannst selbst
   spielen oder den Bot spielen lassen („Auto ▶“).
-- Feldgröße, Flotte und die Diagonal-Regel sind in den Einstellungen änderbar.
+- **Vertippt?** Ein markiertes Feld anklicken und einfach den richtigen Knopf drücken
+  (Wasser/Treffer/Versenkt), oder mit **„Feld leeren“** (`L`) zurücksetzen.
+  Ein versenktes Schiff wird dabei automatisch wieder „entsenkt“.
+- **Einstellungen** mit +/− für Feldgröße und jede Schiffslänge (1er–5er), dazu Vorlagen:
+  „Unser Spiel“ (9×9), Klassisch (10×10, 5-4-3-3-2), Schiffe versenken (10×10, 1×5, 2×4, 3×3, 4×2)
+  und Seeschlacht mit 1ern (10×10, 1×4, 2×3, 3×2, 4×1). Die Diagonal-Regel ist umschaltbar.
 
 ## Standardregeln
 

@@ -238,6 +238,58 @@ export function applyShot(g, x, result) {
   return { ok: true, sunkLength: len, cells: comp };
 }
 
+/**
+ * Baut alles Abgeleitete aus den Beobachtungen neu auf: gesperrte Ränder,
+ * verbleibende Flotte, Schuss-/Fehlschusszähler.
+ */
+function rebuildDerived(g) {
+  for (let x = 0; x < g.cells.length; x++) if (g.cells[x] === BLOCKED) g.cells[x] = UNKNOWN;
+  g.remaining = Object.fromEntries(g.config.fleet.map((f) => [f.length, f.count]));
+  for (const s of g.sunkShips) {
+    g.remaining[s.length]--;
+    for (const y of s.cells) for (const z of neighborsOf(g, y)) if (g.cells[z] === UNKNOWN) g.cells[z] = BLOCKED;
+  }
+  let shots = 0, misses = 0;
+  for (const v of g.cells) {
+    if (v === MISS) { shots++; misses++; } else if (v === HIT || v === SUNK) shots++;
+  }
+  g.shots = shots;
+  g.misses = misses;
+}
+
+/**
+ * Ändert ein bereits markiertes Feld nachträglich.
+ * result: 'clear' (zurück auf unbekannt) | 'miss' | 'hit' | 'sunk'.
+ * Ist das Feld Teil eines versenkten Schiffs, wird das Schiff zuerst wieder
+ * "entsenkt" (seine übrigen Felder bleiben Treffer).
+ * Bei Fehler bleibt der Zustand unverändert.
+ */
+export function editCell(g, x, result) {
+  const backup = cloneGame(g);
+  const restore = (error) => {
+    Object.assign(g, cloneGame(backup));
+    return { ok: false, error };
+  };
+  const v = g.cells[x];
+  if (v === BLOCKED && result === 'clear') {
+    return { ok: false, error: 'Dieses Feld ist automatisch gesperrt (Rand eines versenkten Schiffs).' };
+  }
+  if (v === SUNK) {
+    const i = g.sunkShips.findIndex((s) => s.cells.includes(x));
+    if (i >= 0) {
+      for (const y of g.sunkShips[i].cells) g.cells[y] = HIT;
+      g.sunkShips.splice(i, 1);
+    }
+  }
+  if (g.cells[x] === MISS || g.cells[x] === HIT) g.cells[x] = UNKNOWN;
+  rebuildDerived(g);
+  if (result === 'clear') return { ok: true };
+  const r = applyShot(g, x, result);
+  if (!r.ok) return restore(r.error);
+  rebuildDerived(g);
+  return r;
+}
+
 // ---------------------------------------------------------------------------
 // Analyse
 // ---------------------------------------------------------------------------
@@ -596,6 +648,7 @@ export function parityInfo(g, pShip, found = []) {
   const lens = Object.entries(searching).filter(([, c]) => c > 0).map(([l]) => +l);
   if (!lens.length) return { k: 0, cls: -1, cells: [] };
   const k = Math.min(...lens);
+  if (k <= 1) return { k, cls: -1, cells: [] }; // 1er können überall liegen -> kein Raster
   const { rows, cols } = g.config;
   const mass = new Array(k).fill(0);
   const open = new Array(k).fill(0);

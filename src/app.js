@@ -1,4 +1,4 @@
-import * as E from './engine.js?v=5';
+import * as E from './engine.js?v=6';
 
 // ---------------------------------------------------------------------------
 // Zustand
@@ -42,7 +42,7 @@ const pct = (v) => (v * 100).toFixed(v > 0 && v < 0.01 ? 1 : 0) + ' %';
 // ---------------------------------------------------------------------------
 let worker = null;
 try {
-  worker = new Worker(new URL('./worker.js?v=5', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.js?v=6', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => onResult(e.data);
   worker.onerror = () => { worker = null; recompute(); };
 } catch { worker = null; }
@@ -120,8 +120,35 @@ function newGame() {
   render();
 }
 
+const STATE_NAME = { [E.MISS]: 'Wasser', [E.HIT]: 'Treffer', [E.SUNK]: 'Versenkt', [E.BLOCKED]: 'Gesperrt', [E.UNKNOWN]: 'leer' };
+const RESULT_STATE = { miss: E.MISS, hit: E.HIT, sunk: E.SUNK, clear: E.UNKNOWN };
+
+/** Bereits markiertes Feld ändern oder leeren (nur im echten Spiel). */
+function editCell(x, result) {
+  const v = S.game.cells[x];
+  if (v === RESULT_STATE[result]) return msg(`${cellName(x)} ist schon ${STATE_NAME[v]}.`);
+  const before = E.cloneGame(S.game);
+  const r = E.editCell(S.game, x, result);
+  if (!r.ok) return msg(r.error, 'err');
+  S.history.push(before);
+  S.manualSelect = true;
+  msg(`${cellName(x)} geändert: ${STATE_NAME[v]} → ${result === 'sunk' ? `${r.sunkLength}er versenkt` : STATE_NAME[RESULT_STATE[result]]}.`, 'ok');
+  saveGame();
+  recompute();
+  render();
+}
+
+function clearSelected() {
+  const x = S.selected;
+  if (x < 0) return msg('Erst ein Feld auswählen.', 'err');
+  if (S.game.cells[x] === E.UNKNOWN) return msg(`${cellName(x)} ist schon leer.`);
+  editCell(x, 'clear');
+}
+
 function shoot(x, result) {
   if (x < 0) return msg('Erst ein Feld auswählen.', 'err');
+  const v = S.game.cells[x];
+  if (S.mode === 'real' && (v === E.MISS || v === E.HIT || v === E.SUNK)) return editCell(x, result);
   if (E.isFinished(S.game)) return msg('Spiel ist vorbei – „Neues Spiel“ starten.', 'err');
   const before = E.cloneGame(S.game);
   const r = E.applyShot(S.game, x, result);
@@ -321,9 +348,15 @@ function render() {
   const sel = S.selected;
   $('sel-cell').textContent = sel >= 0 ? cellName(sel) : '–';
   let hint = '';
-  if (sel >= 0 && a && g.cells[sel] === E.UNKNOWN) hint = `(Treffer ${pct(a.pShip[sel])})`;
-  else if (sel >= 0 && g.cells[sel] === E.HIT) hint = '(Treffer – mit „Versenkt“ als versenkt markieren)';
+  const sv = sel >= 0 ? g.cells[sel] : -1;
+  if (sv === E.UNKNOWN && a) hint = `(Treffer ${pct(a.pShip[sel])})`;
+  else if (S.mode === 'real' && (sv === E.MISS || sv === E.HIT || sv === E.SUNK)) {
+    hint = `(${STATE_NAME[sv]} – zum Ändern anderen Knopf drücken oder leeren)`;
+  } else if (sv === E.BLOCKED) hint = '(automatisch gesperrt)';
   $('sel-hint').textContent = hint;
+  const clr = $('clear-cell');
+  clr.hidden = S.mode !== 'real';
+  clr.disabled = !(sv === E.MISS || sv === E.HIT || sv === E.SUNK);
   $('undo').disabled = !S.history.length;
 
   renderFleet();
@@ -362,7 +395,13 @@ function renderFleet() {
     note.textContent = 'Alle Schiffe gefunden – nur noch abschießen!';
     el.appendChild(note);
   }
-  if (p && p.k) {
+  if (p && p.k === 1) {
+    const note = document.createElement('div');
+    note.className = 'hint';
+    note.textContent = 'Raster: entfällt, solange 1er-Schiffe gesucht werden (die passen in jede Lücke).';
+    el.appendChild(note);
+  }
+  if (p && p.k > 1) {
     const note = document.createElement('div');
     note.className = 'hint';
     note.textContent = `Raster: jedes ${p.k}. Feld (kürzestes gesuchtes Schiff = ${p.k}, also ${p.k - 1} Lücken dazwischen).`;
@@ -407,53 +446,103 @@ function msg(text, kind = '') {
 // ---------------------------------------------------------------------------
 // Einstellungen
 // ---------------------------------------------------------------------------
-let draftFleet = [];
+const PRESETS = [
+  { name: 'Unser Spiel (9×9)', rows: 9, cols: 9, fleet: { 4: 3, 3: 5 }, diagonalTouch: false },
+  { name: 'Klassisch (10×10, 5-4-3-3-2)', rows: 10, cols: 10, fleet: { 5: 1, 4: 1, 3: 2, 2: 1 }, diagonalTouch: false },
+  { name: 'Schiffe versenken (10×10, 1-2-3-4)', rows: 10, cols: 10, fleet: { 5: 1, 4: 2, 3: 3, 2: 4 }, diagonalTouch: false },
+  { name: 'Seeschlacht mit 1ern (10×10)', rows: 10, cols: 10, fleet: { 4: 1, 3: 2, 2: 3, 1: 4 }, diagonalTouch: false },
+];
+const SHIP_LENGTHS = [1, 2, 3, 4, 5];
+const MIN_SIZE = 4, MAX_SIZE = 12, MAX_COUNT = 9;
+let draft = null; // { rows, cols, counts: {len: n}, diagonalTouch }
 
-function fillSettings() {
-  $('cfg-rows').value = S.config.rows;
-  $('cfg-cols').value = S.config.cols;
-  $('cfg-diag').checked = !!S.config.diagonalTouch;
-  $('cfg-samples').value = S.samples;
-  draftFleet = S.config.fleet.map((f) => ({ ...f }));
-  renderDraftFleet();
+function draftFromConfig(cfg) {
+  const counts = Object.fromEntries(SHIP_LENGTHS.map((l) => [l, 0]));
+  for (const f of cfg.fleet) counts[f.length] = (counts[f.length] || 0) + f.count;
+  return { rows: cfg.rows, cols: cfg.cols, counts, diagonalTouch: !!cfg.diagonalTouch };
 }
 
-function renderDraftFleet() {
+function draftConfig() {
+  const fleet = Object.entries(draft.counts).filter(([, c]) => c > 0).map(([length, count]) => ({ length: +length, count }));
+  return E.normalizeConfig({ rows: draft.rows, cols: draft.cols, fleet, diagonalTouch: draft.diagonalTouch });
+}
+
+function fillSettings() {
+  draft = draftFromConfig(S.config);
+  $('cfg-diag').checked = draft.diagonalTouch;
+  $('cfg-samples').value = S.samples;
+  renderSettings();
+}
+
+function stepper(el, value, min, max, onChange) {
+  el.innerHTML = `<button type="button" aria-label="weniger">−</button><output>${value}</output><button type="button" aria-label="mehr">+</button>`;
+  const [minus, plus] = el.querySelectorAll('button');
+  minus.disabled = value <= min;
+  plus.disabled = value >= max;
+  minus.onclick = () => onChange(Math.max(min, value - 1));
+  plus.onclick = () => onChange(Math.min(max, value + 1));
+}
+
+function renderSettings() {
+  // Vorlagen
+  const cur = JSON.stringify(draftConfig());
+  const pre = $('cfg-presets');
+  pre.innerHTML = '';
+  for (const p of PRESETS) {
+    const b = document.createElement('button');
+    b.className = 'btn ghost';
+    b.type = 'button';
+    b.textContent = p.name;
+    const pd = { rows: p.rows, cols: p.cols, counts: { ...Object.fromEntries(SHIP_LENGTHS.map((l) => [l, 0])), ...p.fleet }, diagonalTouch: p.diagonalTouch };
+    const saved = draft;
+    draft = pd;
+    const isActive = JSON.stringify(draftConfig()) === cur;
+    draft = saved;
+    b.classList.toggle('active', isActive);
+    b.onclick = () => {
+      draft = pd;
+      $('cfg-diag').checked = pd.diagonalTouch;
+      renderSettings();
+      msg(`Vorlage „${p.name}“ geladen – „Übernehmen“ drücken.`);
+    };
+    pre.appendChild(b);
+  }
+  // Feldgröße
+  stepper($('cfg-rows'), draft.rows, MIN_SIZE, MAX_SIZE, (v) => { draft.rows = v; renderSettings(); });
+  stepper($('cfg-cols'), draft.cols, MIN_SIZE, MAX_SIZE, (v) => { draft.cols = v; renderSettings(); });
+  // Schiffe
   const el = $('cfg-fleet');
   el.innerHTML = '';
-  draftFleet.forEach((f, i) => {
+  const lengths = [...new Set([...SHIP_LENGTHS, ...Object.keys(draft.counts).map(Number)])].sort((a, b) => b - a);
+  for (const len of lengths) {
+    const n = draft.counts[len] || 0;
     const line = document.createElement('div');
-    line.className = 'fleet-line';
-    line.innerHTML = `<input type="number" min="1" max="12" value="${f.count}" aria-label="Anzahl"> × Länge
-      <input type="number" min="1" max="12" value="${f.length}" aria-label="Länge">
-      <button class="btn ghost small" aria-label="Entfernen">✕</button>`;
-    const [cnt, len] = line.querySelectorAll('input');
-    cnt.addEventListener('input', () => { f.count = +cnt.value; });
-    len.addEventListener('input', () => { f.length = +len.value; });
-    line.querySelector('button').addEventListener('click', () => { draftFleet.splice(i, 1); renderDraftFleet(); });
+    line.className = 'step-line' + (n ? '' : ' off');
+    line.innerHTML = `<span class="ship-pre"><span class="ship">${'<i></i>'.repeat(len)}</span>${len}er</span><span class="stepper"></span>`;
+    stepper(line.querySelector('.stepper'), n, 0, MAX_COUNT, (v) => { draft.counts[len] = v; renderSettings(); });
     el.appendChild(line);
-  });
+  }
+  const shipCells = Object.entries(draft.counts).reduce((s, [l, c]) => s + l * c, 0);
+  const ships = Object.values(draft.counts).reduce((a, b) => a + b, 0);
+  const total = draft.rows * draft.cols;
+  $('cfg-summary').textContent = `${ships} Schiffe · ${shipCells} von ${total} Feldern belegt (${Math.round((shipCells / total) * 100)} %)`;
 }
 
 function applySettings() {
-  const rows = Math.max(4, Math.min(12, +$('cfg-rows').value || 9));
-  const cols = Math.max(4, Math.min(12, +$('cfg-cols').value || 9));
-  // gleiche Längen zusammenfassen
-  const merged = {};
-  for (const f of draftFleet) if (f.count > 0 && f.length > 0) merged[f.length] = (merged[f.length] || 0) + f.count;
-  const fleet = Object.entries(merged).map(([length, count]) => ({ length: +length, count }));
-  if (!fleet.length) return msg('Mindestens ein Schiff angeben.', 'err');
-  if (fleet.some((f) => f.length > Math.max(rows, cols))) return msg('Ein Schiff ist länger als das Feld.', 'err');
-  const cfg = E.normalizeConfig({ rows, cols, fleet, diagonalTouch: $('cfg-diag').checked });
+  draft.diagonalTouch = $('cfg-diag').checked;
+  const cfg = draftConfig();
+  if (!cfg.fleet.length) return msg('Mindestens ein Schiff angeben.', 'err');
+  if (cfg.fleet.some((f) => f.length > Math.max(cfg.rows, cfg.cols))) return msg('Ein Schiff ist länger als das Feld.', 'err');
   const test = E.analyze(E.newGame(cfg), { samples: 3000 });
-  if (test.contradiction) return msg('Diese Flotte passt nicht aufs Feld.', 'err');
+  if (test.contradiction) return msg('Diese Flotte passt nicht aufs Feld (Schiffe dürfen sich nicht berühren).', 'err');
+  if (S.mode === 'real' && S.game.shots > 0 && !E.isFinished(S.game) && !confirm('Laufendes Spiel verwerfen?')) return;
   S.config = cfg;
   S.samples = Math.max(1000, Math.min(200000, +$('cfg-samples').value || 30000));
   store.set('config', cfg);
   store.set('samples', S.samples);
   fillSettings();
   newGame();
-  msg('Einstellungen übernommen.', 'ok');
+  msg('Einstellungen übernommen – neues Spiel gestartet.', 'ok');
 }
 
 // ---------------------------------------------------------------------------
@@ -533,12 +622,14 @@ function init() {
   });
   $('demo-reveal').addEventListener('click', () => { S.reveal = !S.reveal; render(); });
 
-  $('cfg-add').addEventListener('click', () => { draftFleet.push({ length: 2, count: 1 }); renderDraftFleet(); });
+  $('clear-cell').addEventListener('click', clearSelected);
   $('cfg-apply').addEventListener('click', applySettings);
   $('cfg-reset').addEventListener('click', () => {
-    S.config = E.normalizeConfig(E.DEFAULT_CONFIG);
-    S.samples = 30000;
-    fillSettings();
+    draft = draftFromConfig(E.normalizeConfig(E.DEFAULT_CONFIG));
+    $('cfg-diag').checked = draft.diagonalTouch;
+    $('cfg-samples').value = 30000;
+    renderSettings();
+    msg('Standardwerte geladen – „Übernehmen“ drücken.');
   });
 
   document.addEventListener('keydown', (e) => {
@@ -560,7 +651,8 @@ function init() {
     if (k === 'z') return undo();
     if (k === 'f' && S.evil && !E.isFinished(S.game)) return setUnleash(!S.unleash);
     if (S.mode === 'real') {
-      if (k === 'w') shoot(S.selected, 'miss');
+      if (k === 'l' || k === 'backspace' || k === 'delete') { e.preventDefault(); clearSelected(); }
+      else if (k === 'w') shoot(S.selected, 'miss');
       else if (k === 't') shoot(S.selected, 'hit');
       else if (k === 'v') shoot(S.selected, 'sunk');
     } else {

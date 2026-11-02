@@ -29,6 +29,23 @@ jedem Zug neu:
 - Schiffe berühren sich nicht, auch nicht diagonal (umschaltbar)
 - Treffer = nochmal schießen
 
+## Training & Fortschritt 🎯
+
+- **Training**: Der Computer versteckt eine Flotte. Du schießt ohne Heatmap, nur nach Gefühl
+  (Klick = Schuss). Nach jedem Schuss gibt es eine Bewertung wie bei einer Schach-Engine
+  (👍 Bester Zug · 🙂 Gut · 🤔 Ungenau · ❌ Fehler · 💥 Sicher Wasser) und den Hinweis, welches
+  Feld besser gewesen wäre. Am Ende spielt der Bot **dieselbe Aufstellung** zum Vergleich.
+- **Blind-Modus** (im echten Spiel): Die App zeigt keine Hilfe, du trägst nur ein, was passiert.
+  Am Ende, oder per „Spiel beenden & auswerten“, wenn die Gegnerin zuerst fertig war, gibt es
+  die Auswertung. Das ist fair, weil während des Spiels nichts verraten wird.
+- **Fortschritt**: Pro Spiel werden die Fehlschüsse und die **Genauigkeit** gespeichert.
+  Genauigkeit = deine Trefferchancen im Verhältnis zum jeweils besten Feld. Sie schwankt deutlich
+  weniger als die Fehlschüsse, die stark vom Glück abhängen. Dazu gibt es ein Diagramm, den Trend
+  und eine Tabelle. Spiele mit Hilfe zählen nicht.
+
+Bewertungsmaßstab ist die Trefferwahrscheinlichkeit, denn nur Fehlschüsse kosten etwas.
+Sichere Treffer sind immer okay. Verglichen wird ein Zug mit dem besten *unsicheren* Feld.
+
 ## Starten
 
 Wegen der JavaScript-Module muss die Seite über einen (lokalen) Webserver laufen.

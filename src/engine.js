@@ -132,6 +132,7 @@ export function newGame(config = DEFAULT_CONFIG) {
     sunkShips: [], // [{length, cells}]
     shots: 0,
     misses: 0,
+    log: [], // Zugprotokoll fürs Training: [{cell, result, rating}]
   };
 }
 
@@ -153,6 +154,9 @@ export function cloneGame(g) {
     sunkShips: g.sunkShips.map((s) => ({ length: s.length, cells: s.cells.slice() })),
     shots: g.shots,
     misses: g.misses,
+    log: (g.log || []).map((e) => ({ ...e, rating: e.rating ? { ...e.rating } : e.rating })),
+    ended: g.ended,
+    saved: g.saved,
   };
 }
 
@@ -870,6 +874,78 @@ export function randomFleet(config = DEFAULT_CONFIG, rng = Math.random) {
     if (ok) return ships;
   }
   throw new Error('Keine gültige Aufstellung gefunden – passt die Flotte aufs Feld?');
+}
+
+// ---------------------------------------------------------------------------
+// Training: Zugbewertung und Bot-Vergleich
+// ---------------------------------------------------------------------------
+
+/**
+ * Bewertet einen Schuss auf Feld x im Spielstand g (vor dem Schuss) anhand
+ * der Analyse a. Maßstab ist die Trefferwahrscheinlichkeit, denn nur
+ * Fehlschüsse kosten etwas.
+ *  - Sichere Treffer (100 %) sind immer gut, kosten aber auch nichts, wenn man
+ *    sie später schießt. Verglichen wird deshalb mit dem besten UNSICHEREN Feld.
+ *  - loss = verschenkte Trefferchance = erwartete zusätzliche Fehlschüsse.
+ */
+export function rateShot(g, a, x) {
+  if (!a || a.contradiction) return null;
+  let pBest = 0, bestCell = -1, sureAvailable = false;
+  for (let y = 0; y < g.cells.length; y++) {
+    if (g.cells[y] !== UNKNOWN) continue;
+    const p = a.pShip[y];
+    if (p >= 1 - 1e-7) { sureAvailable = true; continue; }
+    if (p > pBest) { pBest = p; bestCell = y; }
+  }
+  const p = g.cells[x] === UNKNOWN ? a.pShip[x] : 0;
+  if (p >= 1 - 1e-7) return { p: 1, pBest: 1, bestCell: x, loss: 0, label: 'sure', sureAvailable };
+  const loss = Math.max(0, pBest - p);
+  const label = p <= 1e-9 ? 'blunder' : loss <= 0.03 ? 'best' : loss <= 0.10 ? 'good' : loss <= 0.25 ? 'inaccuracy' : 'mistake';
+  return { p, pBest, bestCell, loss, label, sureAvailable };
+}
+
+export const RATING_LABELS = {
+  sure: { text: 'Sicherer Treffer', icon: '✅' },
+  best: { text: 'Bester Zug', icon: '👍' },
+  good: { text: 'Gut', icon: '🙂' },
+  inaccuracy: { text: 'Ungenau', icon: '🤔' },
+  mistake: { text: 'Fehler', icon: '❌' },
+  blunder: { text: 'Sicher Wasser!', icon: '💥' },
+};
+
+/** Zusammenfassung eines bewerteten Spiels. */
+export function summarizeLog(log) {
+  const rated = log.filter((e) => e.rating);
+  const sumP = rated.reduce((s, e) => s + e.rating.p, 0);
+  const sumBest = rated.reduce((s, e) => s + Math.max(e.rating.p, e.rating.pBest), 0);
+  const counts = Object.fromEntries(Object.keys(RATING_LABELS).map((k) => [k, 0]));
+  for (const e of rated) counts[e.rating.label]++;
+  return {
+    moves: rated.length,
+    accuracy: sumBest > 0 ? sumP / sumBest : 1, // 1 = immer so gut wie der Bot
+    cost: rated.reduce((s, e) => s + e.rating.loss, 0), // ≈ verschenkte Fehlschüsse
+    counts,
+    worst: rated
+      .map((e, i) => ({ ...e, move: i + 1 }))
+      .filter((e) => e.rating.loss > 0.03)
+      .sort((a, b) => b.rating.loss - a.rating.loss)
+      .slice(0, 5),
+    helped: rated.some((e) => e.helped),
+  };
+}
+
+/** Lässt den Bot eine bekannte Aufstellung komplett spielen. */
+export function simulateBotGame(config, ships, { samples = 8000, seed = 1, strategy = 'infoPerMiss' } = {}) {
+  const g = newGame(config);
+  let move = 0;
+  while (!isFinished(g) && move < g.cells.length + 5) {
+    const a = analyze(g, { samples, seed: seed * 1000 + move++ });
+    const { cell } = chooseShot(g, a, strategy);
+    if (cell < 0) break;
+    const res = resolveShot(g, ships, cell);
+    applyShot(g, cell, res, res === 'sunk' ? shipAt(ships, cell) : undefined);
+  }
+  return { shots: g.shots, misses: g.misses };
 }
 
 /** Schiff (Liste von Feldern), das auf Feld x liegt, oder undefined. */

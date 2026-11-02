@@ -1,4 +1,4 @@
-import * as E from './engine.js?v=6';
+import * as E from './engine.js?v=7';
 
 // ---------------------------------------------------------------------------
 // Zustand
@@ -42,7 +42,7 @@ const pct = (v) => (v * 100).toFixed(v > 0 && v < 0.01 ? 1 : 0) + ' %';
 // ---------------------------------------------------------------------------
 let worker = null;
 try {
-  worker = new Worker(new URL('./worker.js?v=6', import.meta.url), { type: 'module' });
+  worker = new Worker(new URL('./worker.js?v=7', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => onResult(e.data);
   worker.onerror = () => { worker = null; recompute(); };
 } catch { worker = null; }
@@ -98,6 +98,7 @@ function setUnleash(v) {
 }
 
 function newGame() {
+  S.pendingSunk = null;
   S.game = E.newGame(S.config);
   S.unleash = false;
   if (S.mode === 'real') store.set('unleash', false);
@@ -123,12 +124,50 @@ function newGame() {
 const STATE_NAME = { [E.MISS]: 'Wasser', [E.HIT]: 'Treffer', [E.SUNK]: 'Versenkt', [E.BLOCKED]: 'Gesperrt', [E.UNKNOWN]: 'leer' };
 const RESULT_STATE = { miss: E.MISS, hit: E.HIT, sunk: E.SUNK, clear: E.UNKNOWN };
 
+/** Mehrere Schiffe möglich (Schiffe dürfen sich berühren): Nutzer fragen. */
+function askSunk(x, isEdit, candidates) {
+  S.pendingSunk = { x, isEdit, candidates };
+  msg('Mehrere Möglichkeiten – welches Schiff wurde versenkt?');
+  render();
+}
+
+function renderSunkChoice() {
+  const box = $('sunk-choice');
+  const p = S.pendingSunk;
+  box.hidden = !p;
+  if (!p) { box.innerHTML = ''; return; }
+  box.innerHTML = '';
+  for (const cells of p.candidates) {
+    const b = document.createElement('button');
+    b.className = 'btn sunk';
+    const sorted = [...cells].sort((a, c) => a - c);
+    b.textContent = `${cellName(sorted[0])}–${cellName(sorted[sorted.length - 1])} (${cells.length}er)`;
+    const mark = (on) => cells.forEach((y) => cellEls[y].classList.toggle('cand', on));
+    b.onmouseenter = b.onfocus = () => mark(true);
+    b.onmouseleave = b.onblur = () => mark(false);
+    b.onclick = () => {
+      mark(false);
+      S.pendingSunk = null;
+      if (p.isEdit) editCell(p.x, 'sunk', cells);
+      else shoot(p.x, 'sunk', cells);
+    };
+    box.appendChild(b);
+  }
+  const cancel = document.createElement('button');
+  cancel.className = 'btn ghost';
+  cancel.textContent = 'Abbrechen';
+  cancel.onclick = () => { S.pendingSunk = null; msg(''); render(); };
+  box.appendChild(cancel);
+}
+
 /** Bereits markiertes Feld ändern oder leeren (nur im echten Spiel). */
-function editCell(x, result) {
+function editCell(x, result, shipCells) {
+  S.pendingSunk = null;
   const v = S.game.cells[x];
   if (v === RESULT_STATE[result]) return msg(`${cellName(x)} ist schon ${STATE_NAME[v]}.`);
   const before = E.cloneGame(S.game);
-  const r = E.editCell(S.game, x, result);
+  const r = E.editCell(S.game, x, result, shipCells);
+  if (!r.ok && r.ambiguous) return askSunk(x, true, r.candidates);
   if (!r.ok) return msg(r.error, 'err');
   S.history.push(before);
   S.manualSelect = true;
@@ -145,18 +184,20 @@ function clearSelected() {
   editCell(x, 'clear');
 }
 
-function shoot(x, result) {
+function shoot(x, result, shipCells) {
+  S.pendingSunk = null;
   if (x < 0) return msg('Erst ein Feld auswählen.', 'err');
   const v = S.game.cells[x];
-  if (S.mode === 'real' && (v === E.MISS || v === E.HIT || v === E.SUNK)) return editCell(x, result);
+  if (S.mode === 'real' && (v === E.MISS || v === E.HIT || v === E.SUNK)) return editCell(x, result, shipCells);
   if (E.isFinished(S.game)) return msg('Spiel ist vorbei – „Neues Spiel“ starten.', 'err');
   const before = E.cloneGame(S.game);
-  const r = E.applyShot(S.game, x, result);
+  const r = E.applyShot(S.game, x, result, shipCells);
+  if (!r.ok && r.ambiguous) return askSunk(x, false, r.candidates);
   if (!r.ok) return msg(r.error, 'err');
   S.history.push(before);
   S.manualSelect = false;
   if (result === 'sunk') {
-    msg(`${cellName(x)}: ${r.sunkLength}er versenkt – Rand gesperrt.`, 'ok');
+    msg(`${cellName(x)}: ${r.sunkLength}er versenkt${S.game.config.touch === 'any' ? '' : ' – Rand gesperrt'}.`, 'ok');
   } else {
     msg(`${cellName(x)}: ${result === 'hit' ? 'Treffer' : 'Wasser'}.`, result === 'hit' ? 'ok' : '');
   }
@@ -171,6 +212,7 @@ function shoot(x, result) {
 
 function undo() {
   if (!S.history.length) return;
+  S.pendingSunk = null;
   S.game = S.history.pop();
   S.manualSelect = false;
   msg('Rückgängig gemacht.');
@@ -183,7 +225,8 @@ function demoShoot(x) {
   if (!S.truth) return;
   const cur = S.game.cells[x];
   if (cur !== E.UNKNOWN && cur !== E.BLOCKED) return msg('Feld wurde schon beschossen.', 'err');
-  shoot(x, E.resolveShot(S.game, S.truth, x));
+  const res = E.resolveShot(S.game, S.truth, x);
+  shoot(x, res, res === 'sunk' ? E.shipAt(S.truth, x) : undefined);
 }
 
 function botMove() {
@@ -210,7 +253,7 @@ function saveGame() {
 
 function loadGame() {
   const saved = store.get('game', null);
-  if (!saved || JSON.stringify(saved.config) !== JSON.stringify(E.normalizeConfig(S.config))) return false;
+  if (!saved || JSON.stringify(E.normalizeConfig(saved.config)) !== JSON.stringify(E.normalizeConfig(S.config))) return false;
   const g = E.newGame(saved.config);
   g.cells.set(saved.cells);
   Object.assign(g, { remaining: saved.remaining, sunkShips: saved.sunkShips, shots: saved.shots, misses: saved.misses });
@@ -359,6 +402,7 @@ function render() {
   clr.disabled = !(sv === E.MISS || sv === E.HIT || sv === E.SUNK);
   $('undo').disabled = !S.history.length;
 
+  renderSunkChoice();
   renderFleet();
   renderStats();
 }
@@ -404,7 +448,7 @@ function renderFleet() {
   if (p && p.k > 1) {
     const note = document.createElement('div');
     note.className = 'hint';
-    note.textContent = `Raster: jedes ${p.k}. Feld (kürzestes gesuchtes Schiff = ${p.k}, also ${p.k - 1} Lücken dazwischen).`;
+    note.textContent = `Raster: jedes ${p.k}. Feld (kürzestes gesuchtes Schiff = ${p.k}, also ${p.k - 1} ${p.k - 1 === 1 ? 'Lücke' : 'Lücken'} dazwischen).`;
     el.appendChild(note);
   }
 }
@@ -447,29 +491,28 @@ function msg(text, kind = '') {
 // Einstellungen
 // ---------------------------------------------------------------------------
 const PRESETS = [
-  { name: 'Unser Spiel (9×9)', rows: 9, cols: 9, fleet: { 4: 3, 3: 5 }, diagonalTouch: false },
-  { name: 'Klassisch (10×10, 5-4-3-3-2)', rows: 10, cols: 10, fleet: { 5: 1, 4: 1, 3: 2, 2: 1 }, diagonalTouch: false },
-  { name: 'Schiffe versenken (10×10, 1-2-3-4)', rows: 10, cols: 10, fleet: { 5: 1, 4: 2, 3: 3, 2: 4 }, diagonalTouch: false },
-  { name: 'Seeschlacht mit 1ern (10×10)', rows: 10, cols: 10, fleet: { 4: 1, 3: 2, 2: 3, 1: 4 }, diagonalTouch: false },
+  { name: 'Unser Spiel (9×9)', rows: 9, cols: 9, fleet: { 4: 3, 3: 5 }, touch: 'none' },
+  { name: 'Klassisch (10×10, 5-4-3-3-2)', rows: 10, cols: 10, fleet: { 5: 1, 4: 1, 3: 2, 2: 1 }, touch: 'any' },
+  { name: 'Schiffe versenken (10×10, 1-2-3-4)', rows: 10, cols: 10, fleet: { 5: 1, 4: 2, 3: 3, 2: 4 }, touch: 'none' },
+  { name: 'Seeschlacht mit 1ern (10×10)', rows: 10, cols: 10, fleet: { 4: 1, 3: 2, 2: 3, 1: 4 }, touch: 'none' },
 ];
 const SHIP_LENGTHS = [1, 2, 3, 4, 5];
 const MIN_SIZE = 4, MAX_SIZE = 12, MAX_COUNT = 9;
-let draft = null; // { rows, cols, counts: {len: n}, diagonalTouch }
+let draft = null; // { rows, cols, counts: {len: n}, touch }
 
 function draftFromConfig(cfg) {
   const counts = Object.fromEntries(SHIP_LENGTHS.map((l) => [l, 0]));
   for (const f of cfg.fleet) counts[f.length] = (counts[f.length] || 0) + f.count;
-  return { rows: cfg.rows, cols: cfg.cols, counts, diagonalTouch: !!cfg.diagonalTouch };
+  return { rows: cfg.rows, cols: cfg.cols, counts, touch: cfg.touch };
 }
 
 function draftConfig() {
   const fleet = Object.entries(draft.counts).filter(([, c]) => c > 0).map(([length, count]) => ({ length: +length, count }));
-  return E.normalizeConfig({ rows: draft.rows, cols: draft.cols, fleet, diagonalTouch: draft.diagonalTouch });
+  return E.normalizeConfig({ rows: draft.rows, cols: draft.cols, fleet, touch: draft.touch });
 }
 
 function fillSettings() {
   draft = draftFromConfig(S.config);
-  $('cfg-diag').checked = draft.diagonalTouch;
   $('cfg-samples').value = S.samples;
   renderSettings();
 }
@@ -493,20 +536,31 @@ function renderSettings() {
     b.className = 'btn ghost';
     b.type = 'button';
     b.textContent = p.name;
-    const pd = { rows: p.rows, cols: p.cols, counts: { ...Object.fromEntries(SHIP_LENGTHS.map((l) => [l, 0])), ...p.fleet }, diagonalTouch: p.diagonalTouch };
+    const pd = { rows: p.rows, cols: p.cols, counts: { ...Object.fromEntries(SHIP_LENGTHS.map((l) => [l, 0])), ...p.fleet }, touch: p.touch };
     const saved = draft;
     draft = pd;
     const isActive = JSON.stringify(draftConfig()) === cur;
     draft = saved;
     b.classList.toggle('active', isActive);
     b.onclick = () => {
-      draft = pd;
-      $('cfg-diag').checked = pd.diagonalTouch;
+      draft = { ...pd, counts: { ...pd.counts } };
       renderSettings();
       msg(`Vorlage „${p.name}“ geladen – „Übernehmen“ drücken.`);
     };
     pre.appendChild(b);
   }
+  // Berühren
+  const TOUCH_HINT = {
+    none: 'Um jedes Schiff bleibt ein Feld Abstand – auch über Eck. Nach „Versenkt“ wird der Rand gesperrt.',
+    diagonal: 'Über Eck dürfen sich Schiffe berühren, direkt daneben nicht.',
+    any: 'Schiffe dürfen direkt aneinander liegen. Nach „Versenkt“ wird nichts gesperrt; ist unklar, welches Schiff versenkt wurde, fragt die App nach.',
+  };
+  document.querySelectorAll('#cfg-touch [data-touch]').forEach((b) => {
+    b.classList.toggle('active', b.dataset.touch === draft.touch);
+    b.setAttribute('aria-checked', b.dataset.touch === draft.touch);
+    b.onclick = () => { draft.touch = b.dataset.touch; renderSettings(); };
+  });
+  $('cfg-touch-hint').textContent = TOUCH_HINT[draft.touch];
   // Feldgröße
   stepper($('cfg-rows'), draft.rows, MIN_SIZE, MAX_SIZE, (v) => { draft.rows = v; renderSettings(); });
   stepper($('cfg-cols'), draft.cols, MIN_SIZE, MAX_SIZE, (v) => { draft.cols = v; renderSettings(); });
@@ -529,12 +583,11 @@ function renderSettings() {
 }
 
 function applySettings() {
-  draft.diagonalTouch = $('cfg-diag').checked;
   const cfg = draftConfig();
   if (!cfg.fleet.length) return msg('Mindestens ein Schiff angeben.', 'err');
   if (cfg.fleet.some((f) => f.length > Math.max(cfg.rows, cfg.cols))) return msg('Ein Schiff ist länger als das Feld.', 'err');
   const test = E.analyze(E.newGame(cfg), { samples: 3000 });
-  if (test.contradiction) return msg('Diese Flotte passt nicht aufs Feld (Schiffe dürfen sich nicht berühren).', 'err');
+  if (test.contradiction) return msg('Diese Flotte passt nicht aufs Feld.', 'err');
   if (S.mode === 'real' && S.game.shots > 0 && !E.isFinished(S.game) && !confirm('Laufendes Spiel verwerfen?')) return;
   S.config = cfg;
   S.samples = Math.max(1000, Math.min(200000, +$('cfg-samples').value || 30000));
@@ -626,7 +679,6 @@ function init() {
   $('cfg-apply').addEventListener('click', applySettings);
   $('cfg-reset').addEventListener('click', () => {
     draft = draftFromConfig(E.normalizeConfig(E.DEFAULT_CONFIG));
-    $('cfg-diag').checked = draft.diagonalTouch;
     $('cfg-samples').value = 30000;
     renderSettings();
     msg('Standardwerte geladen – „Übernehmen“ drücken.');

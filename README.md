@@ -16,7 +16,10 @@ jedem Zug neu:
   Ein versenktes Schiff wird dabei automatisch wieder „entsenkt“.
 - **Einstellungen** mit +/− für Feldgröße und jede Schiffslänge (1er–5er), dazu Vorlagen:
   „Unser Spiel“ (9×9), Klassisch (10×10, 5-4-3-3-2), Schiffe versenken (10×10, 1×5, 2×4, 3×3, 4×2)
-  und Seeschlacht mit 1ern (10×10, 1×4, 2×3, 3×2, 4×1). Die Diagonal-Regel ist umschaltbar.
+  und Seeschlacht mit 1ern (10×10, 1×4, 2×3, 3×2, 4×1). „Schiffe dürfen sich berühren“ ist einstellbar: **Nein** (auch nicht über Eck),
+  **Nur über Eck** oder **Ja** (wie in der offiziellen klassischen Version). Bei „Ja“ wird
+  nach „Versenkt“ nichts gesperrt. Ist unklar, welche Treffer zum versenkten Schiff gehören,
+  fragt die App nach.
 
 ## Standardregeln
 

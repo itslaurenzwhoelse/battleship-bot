@@ -28,13 +28,14 @@ function allPlacements(rows, cols, len) {
   return out;
 }
 
-function touches(a, b, cols, diagonalTouch) {
+function touches(a, b, cols, touch) {
   for (const x of a)
     for (const y of b) {
       const dr = Math.abs(Math.floor(x / cols) - Math.floor(y / cols));
       const dc = Math.abs((x % cols) - (y % cols));
       if (dr === 0 && dc === 0) return true;
-      if (diagonalTouch ? dr + dc === 1 : dr <= 1 && dc <= 1) return true;
+      if (touch === 'any') continue; // nur Überlappen verboten
+      if (touch === 'diagonal' ? dr + dc === 1 : dr <= 1 && dc <= 1) return true;
     }
   return false;
 }
@@ -54,7 +55,7 @@ function naiveFleets(cfg) {
     const L = pl[lens[i]];
     const start = i > 0 && lens[i - 1] === lens[i] ? curIdx[i - 1] + 1 : 0; // ununterscheidbar
     for (let p = start; p < L.length; p++) {
-      if (cur.some((s) => touches(s, L[p], cfg.cols, cfg.diagonalTouch))) continue;
+      if (cur.some((s) => touches(s, L[p], cfg.cols, cfg.touch))) continue;
       cur.push(L[p]);
       curIdx.push(p);
       rec(i + 1);
@@ -81,6 +82,12 @@ function consistent(fleet, shotCells, g) {
       if (v === E.SUNK && !sunk) return false;
     }
   }
+  // Gemeldete versenkte Schiffe müssen genau die Schiffe dieser Flotte sein
+  const key = (s) => [...s].sort((a, b) => a - b).join(',');
+  const sunkNow = new Set(fleet.filter((s) => s.every((y) => shot.has(y))).map(key));
+  const reported = new Set(g.sunkShips.map((s) => key(s.cells)));
+  if (sunkNow.size !== reported.size) return false;
+  for (const k of reported) if (!sunkNow.has(k)) return false;
   return true;
 }
 
@@ -104,9 +111,10 @@ function naiveMarginals(g, fleets, shotCells) {
 // ---------------------------------------------------------------------------
 console.log('Test 1: exakte Engine-Zählung vs. naive Brute-Force');
 for (const cfg of [
-  { rows: 6, cols: 6, fleet: [{ length: 3, count: 2 }, { length: 2, count: 1 }], diagonalTouch: false },
-  { rows: 6, cols: 6, fleet: [{ length: 4, count: 1 }, { length: 3, count: 1 }, { length: 2, count: 1 }], diagonalTouch: true },
-  { rows: 7, cols: 6, fleet: [{ length: 4, count: 1 }, { length: 3, count: 2 }], diagonalTouch: false },
+  { rows: 6, cols: 6, fleet: [{ length: 3, count: 2 }, { length: 2, count: 1 }], touch: 'none' },
+  { rows: 6, cols: 6, fleet: [{ length: 4, count: 1 }, { length: 3, count: 1 }, { length: 2, count: 1 }], touch: 'diagonal' },
+  { rows: 7, cols: 6, fleet: [{ length: 4, count: 1 }, { length: 3, count: 2 }], touch: 'none' },
+  { rows: 5, cols: 5, fleet: [{ length: 3, count: 2 }, { length: 2, count: 1 }], touch: 'any' },
 ]) {
   const fleets = naiveFleets(cfg);
   const rng = E.makeRng(12345);
@@ -120,7 +128,8 @@ for (const cfg of [
       if (E.isFinished(g)) break;
       if (g.cells[x] !== E.UNKNOWN && g.cells[x] !== E.BLOCKED) continue;
       const res = E.resolveShot(g, truth, x);
-      E.applyShot(g, x, res);
+      const ar = E.applyShot(g, x, res, res === 'sunk' ? E.shipAt(truth, x) : undefined);
+      check(ar.ok, 'Schuss eintragen: ' + ar.error);
       shotCells.push(x);
       // Nur echte Schüsse sind Beobachtungen; gesperrte Randfelder sind eine
       // Schlussfolgerung der Engine und werden hier bewusst NICHT mitgegeben.
@@ -155,7 +164,8 @@ console.log('Test 2: Stichprobe vs. exakt (9x9 Standardspiel, Spielmitte)');
     for (const x of order) {
       if (E.isFinished(g)) break;
       if (g.cells[x] !== E.UNKNOWN) continue;
-      E.applyShot(g, x, E.resolveShot(g, truth, x));
+      const res = E.resolveShot(g, truth, x);
+      E.applyShot(g, x, res, res === 'sunk' ? E.shipAt(truth, x) : undefined);
       const exact = E.analyze(g, { samples: 2000, exactThreshold: Infinity, exactBudget: 2e6 });
       if (exact.method !== 'exact' || exact.configCount < 2000) continue;
       const smp = E.analyze(g, { samples: 60000, exactThreshold: 0, exactBudget: 0, seed: compared + 1 });
@@ -203,6 +213,22 @@ console.log('Test 4: Gefundene (sichere, nicht versenkte) Schiffe');
   a = E.analyze(g, { samples: 20000, seed: 3 });
   check(a.found.length === 1 && a.found[0].length === 3, '3er gefunden');
   check(a.parity.k === 4, 'nur noch 4er gesucht -> Raster 4');
+}
+
+// ---------------------------------------------------------------------------
+console.log('Test 5: Versenkt, wenn sich Schiffe berühren dürfen');
+{
+  const cfg = { rows: 5, cols: 5, fleet: [{ length: 3, count: 2 }], touch: 'any' };
+  const c = (s) => (+s.slice(1) - 1) * 5 + (s.charCodeAt(0) - 65);
+  const g = E.newGame(cfg);
+  for (const s of ['B1', 'C1', 'A2', 'A3']) E.applyShot(g, c(s), 'hit');
+  const amb = E.applyShot(g, c('A1'), 'sunk');
+  check(!amb.ok && amb.ambiguous && amb.candidates.length === 2, 'A1 versenkt ist mehrdeutig (A1–C1 oder A1–A3)');
+  check(g.cells[c('A1')] === E.UNKNOWN, 'bei Mehrdeutigkeit bleibt alles unverändert');
+  const ok = E.applyShot(g, c('A1'), 'sunk', [c('A1'), c('B1'), c('C1')]);
+  check(ok.ok && g.cells[c('A2')] === E.HIT && g.cells[c('B2')] === E.UNKNOWN, 'A1–C1 versenkt, kein Sperr-Rand');
+  const a = E.analyze(g, { samples: 5000 });
+  check(!a.contradiction && a.found.length === 1, 'restlicher 3er (A2–A4) gefunden');
 }
 
 if (failures) {
